@@ -579,8 +579,6 @@ Sample output:
 
 If you choose `Open all discovered channels`, `pwneye` launches a dedicated multi-channel client that keeps all discovered streams inside a single window. Each feed is shown in the mosaic as a live preview, and clicking a tile promotes that channel to a larger focused view with a simple `Back` action to return to the grid.
 
-By default, live RTSP preview uses the dedicated `pwneye` client. If you prefer the classic system-player workflow instead, you can add `--legacy` to open the validated stream with `ffplay`.
-
 <p align="center">
   <img src="assets/dvr-demo.png" alt="pwneye dedicated multi-channel client demo">
 </p>
