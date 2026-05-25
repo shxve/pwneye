@@ -75,7 +75,8 @@ class TUI(Protocol):
         channels: Sequence[RtspChannelEntry],
         prompt: str = "Select channel",
         indent: int = 0,
-    ) -> RtspChannelEntry: ...
+        extra_option: str | None = None,
+    ) -> RtspChannelEntry | None: ...
 
     def confirm(self, prompt: str, default: bool = True, interrupt_message: str | None = "CTRL-C detected. Aborting execution...") -> bool: ...
 

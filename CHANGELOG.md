@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+## [1.2.0] - 2026-05-25 (Panopticon)
+
+### Added
+
+- Dedicated RTSP viewer client with a single-window live interface, per-stream status badges, focused view, zoom support, and improved handling for DVR / NVR-style multi-channel targets
+- `--legacy` RTSP preview mode to fall back to `ffplay` instead of the dedicated client when the system utilities are preferred
+- ONVIF factory-reset support via `--reset`
+- ONVIF deface support via `--deface`, combining stream darkening and OSD text reuse to place a custom message on the target stream
+- ONVIF deface restore support via `--undeface`, using a saved restoration profile to revert previous stream changes
+- Interactive ONVIF shell support via `--shell`, exposing the underlying ONVIF capabilities for advanced users
+- Dedicated restore-profile storage for ONVIF deface / undeface flows inside the existing cache layout
+- Cache cleanup support via `--clear-cache`
+
+### Changed
+
+- ONVIF post-auth extraction now highlights offensively useful capabilities such as OSD deface support and factory-reset availability
+- RTSP multi-channel handling has been extended beyond simple channel selection to support opening all discovered feeds inside the dedicated client
+- Cache management is now surfaced more clearly in the CLI and `--help`, including explicit cache cleanup and more visible runtime directory initialization
+- Startup and runtime initialization have been refined to make dependency checks, update checks, cache setup, and media directories more explicit and easier to understand
+- The README and top-level project documentation were revised to cover the dedicated client, ONVIF administrative actions, deface / undeface support, and updated installation / update guidance
+
+### Fixed
+
+- Improved dedicated viewer stability across single-stream and multi-channel workflows, including reconnect behavior, focus switching, keyboard controls, and client shutdown
+- Improved RTSP and ONVIF cache interactions so cached findings, fresh scans, and explicit credentials behave more predictably across repeated runs
+- Multiple workflow and messaging fixes across ONVIF post-auth actions, RTSP preview routing, multi-channel selection, and update reporting
+
 ## [1.1.0] - 2026-05-03 (Panopticon)
 
 ### Added

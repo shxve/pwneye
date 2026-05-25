@@ -114,6 +114,29 @@ def parse_args(logger) -> argparse.Namespace:
         action="store_true",
         help="Reboot the camera via ONVIF and skip RTSP probing",
     )
+    onvif.add_argument(
+        "--reset",
+        action="store_true",
+        help="Factory-reset the camera via ONVIF and skip RTSP probing",
+    )
+    onvif.add_argument(
+        "--deface",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="MESSAGE",
+        help="Darken the stream and place MESSAGE at the center via ONVIF, then skip RTSP probing",
+    )
+    onvif.add_argument(
+        "--undeface",
+        action="store_true",
+        help="Restore the last saved ONVIF deface profile and skip RTSP probing",
+    )
+    onvif.add_argument(
+        "--shell",
+        action="store_true",
+        help="Open an interactive ONVIF shell and skip RTSP probing",
+    )
     # RTSP options
 
     rtsp = parser.add_argument_group("RTSP (Optional)")
@@ -179,6 +202,11 @@ def parse_args(logger) -> argparse.Namespace:
         help="Prefer RTSP multi-channel connection strings when available",
     )
     rtsp.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Open live RTSP previews with ffplay instead of the dedicated client",
+    )
+    rtsp.add_argument(
         "--record",
         nargs="?",
         const="",
@@ -200,19 +228,28 @@ def parse_args(logger) -> argparse.Namespace:
         help="Do not attempt to fetch or decode video streams",
     )
 
-    # Misc options
+    # Cache options
 
-    misc = parser.add_argument_group("Misc (optional)")
-    misc.add_argument(
+    cache = parser.add_argument_group("Cache (Optional)")
+    cache.add_argument(
         "--no-cache",
         action="store_true",
         help="Do not read from or write to cache",
     )
-    misc.add_argument(
+    cache.add_argument(
         "--fresh",
         action="store_true",
         help="Ignore cached results but update the cache with new findings",
     )
+    cache.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Delete all cached target entries and exit",
+    )
+
+    # Misc options
+
+    misc = parser.add_argument_group("Misc (optional)")
     misc.add_argument(
         "--threads",
         type=int,
@@ -233,7 +270,7 @@ def parse_args(logger) -> argparse.Namespace:
 
     args = parser.parse_args()
 
-    if not (args.target or args.discover or args.list_vendors or args.check_updates):
+    if not (args.target or args.discover or args.list_vendors or args.check_updates or args.clear_cache):
         parser.error("one of --target or --discover is required")
 
     if args.record is not None and args.snapshot is not None:

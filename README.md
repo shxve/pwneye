@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-red" alt="version 1.1.0">
+  <img src="https://img.shields.io/badge/version-1.2.0-red" alt="version 1.2.0">
   <img src="https://img.shields.io/badge/codename-panopticon-black" alt="codename panopticon">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="macOS and Linux">
@@ -14,15 +14,16 @@
 
 Some of the capabilities currently supported include:
 
-- Local network ONVIF discovery via WS-Discovery
-- ONVIF authentication with single credentials or username/password files
-- Multithreaded ONVIF bruteforce with live progress output
+- Local network **ONVIF discovery** via WS-Discovery
+- ONVIF authentication and **multithreaded bruteforce** with single credentials or username/password files
 - ONVIF post-auth enumeration of device information, configured users, network configuration, media profiles, and RTSP stream URIs
-- ONVIF reboot support with `--reboot`
-- RTSP port detection and banner-based vendor identification
-- Vendor-aware RTSP bruteforce with manual vendor and manual connection string support
+- Camera **reboot**, factory **reset**, and **interactive shell access** via ONVIF
+- **Stream deface and restore** support via ONVIF
+- RTSP port detection and **banner-based vendor identification**
+- Vendor-aware RTSP bruteforce with **450+ built-in vendor credential / connection-string profiles**, plus manual vendor and manual connection string support
 - Multithreaded RTSP bruteforce with live progress output
-- RTSP multi-channel handling with automatic detection, guided enumeration, and interactive channel selection
+- **RTSP multi-channel handling** with automatic detection, guided enumeration, and interactive channel selection
+- Dedicated **live preview client** with zoom and fast channel switching for DVR/NVR-style targets
 - RTSP stream validation, live preview via `ffplay`, recording via `ffmpeg`, and snapshot capture
 - Per-target caching of successful ONVIF and RTSP findings under `~/.pwneye`
 
@@ -32,9 +33,9 @@ https://github.com/user-attachments/assets/6913632b-326d-455e-aa0d-be6bf9b3e66c
 
 ## Table of Contents
 
-- [Installation](#installation)
-  - [Python](#python)
+- [Installation and Updates](#installation-and-updates)
   - [pipx](#pipx)
+  - [Python](#python)
   - [External Dependencies](#external-dependencies)
 - [Getting Started](#getting-started)
 - [ONVIF](#onvif)
@@ -42,6 +43,10 @@ https://github.com/user-attachments/assets/6913632b-326d-455e-aa0d-be6bf9b3e66c
   - [Enumerating the Local Network](#enumerating-the-local-network)
   - [Bruteforcing Credentials](#bruteforcing-credentials)
   - [Rebooting a Camera](#rebooting-a-camera)
+  - [Resetting a Camera](#resetting-a-camera)
+  - [Defacing a Stream](#defacing-a-stream)
+  - [Undefacing a Stream](#undefacing-a-stream)
+  - [Getting a shell](#getting-a-shell)
 - [RTSP](#rtsp)
   - [What RTSP Gives You](#what-rtsp-gives-you)
   - [Identifying the Vendor](#identifying-the-vendor)
@@ -49,30 +54,11 @@ https://github.com/user-attachments/assets/6913632b-326d-455e-aa0d-be6bf9b3e66c
   - [Multi-Channel Streams](#multi-channel-streams)
   - [Streaming, Recording, and Snapshots](#streaming-recording-and-snapshots)
 - [Tips & Tricks](#tips--tricks)
-- [TODO](#todo)
 - [Acknowledgements](#acknowledgements)
 - [Safety](#safety)
 - [License](#license)
 
-## Installation
-
-### Python
-
-```bash
-git clone https://github.com/Hackerest/pwneye
-cd pwneye
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python3 pwneye.py --help
-```
-
-Upgrade it later from the same GitHub source:
-
-```bash
-cd pwneye
-git pull
-```
+## Installation and Updates
 
 ### pipx
 
@@ -93,6 +79,26 @@ Upgrade it later from the same GitHub source:
 
 ```bash
 pipx upgrade pwneye
+```
+
+### Python
+
+```bash
+git clone https://github.com/Hackerest/pwneye
+cd pwneye
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python3 pwneye.py --help
+```
+
+Upgrade it later from the same GitHub source:
+
+```bash
+cd pwneye
+git pull
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ### External Dependencies
@@ -167,7 +173,7 @@ Useful flags to keep in mind:
 
 ONVIF is the management and control side of the camera world. In practice, it is useful for discovery, authentication, metadata extraction, media profile enumeration, stream URI retrieval, and device actions such as rebooting.
 
-In `pwneye`, ONVIF is the protocol that usually gives the richest post-auth context and the cleanest path to understanding what a camera exposes.
+In `pwneye`, ONVIF is usually the protocol that gives the richest post-auth context, the cleanest path to understanding what a camera exposes, and, when the authenticated account has enough privileges, access to real administrative actions on the device.
 
 ### What ONVIF Gives You
 
@@ -179,6 +185,10 @@ When a camera exposes ONVIF, `pwneye` can use it to:
 - retrieve RTSP stream URIs exposed by the device
 - enumerate useful post-auth context before touching RTSP more aggressively
 - request an authenticated reboot with `--reboot`
+- request an authenticated factory reset with `--reset`
+- open an authenticated interactive shell with `--shell`
+- deface the stream via ONVIF with `--deface`
+- restore the last saved deface profile with `--undeface`
 
 ### Enumerating the Local Network
 
@@ -264,6 +274,167 @@ pwneye -t 192.168.1.135 --reboot
 ```
 
 When `--reboot` is used, RTSP probing is skipped.
+
+### Resetting a Camera
+
+If ONVIF authentication succeeds, you can also request a factory reset directly:
+
+```text
+pwneye -t 192.168.1.135 --reset
+
+[info] Found cached ONVIF/RTSP credential(s) for 192.168.1.135
+[info] Checking if the target (192.168.1.135) is reachable...
+[info] The target seems to be reachable
+[info] Trying cached ONVIF credentials for the target...
+[success] 192.168.1.135 supports ONVIF on port 80
+[success] ONVIF connection established using the following configuration:
+
+   Port: 80
+   ONVIF Username: admin
+   ONVIF Password: Hackerest1
+
+[>] Do you really want to factory-reset the camera via ONVIF? [(y)es/(n)o] (default: n):
+[warning] Requesting ONVIF factory reset...
+[info] ONVIF factory reset request sent
+[info] Checking if the camera is still reachable...
+[warning] The ONVIF factory reset request was sent, but the target still appears to be reachable. Please verify manually that the reset was completed.
+```
+
+**Warning**: this operation may be irreversible and can wipe the current device configuration, credentials, and network settings. Use `--reset` only when you fully understand the impact and are explicitly authorized to perform it.
+
+As with `--reboot`, when `--reset` is used, RTSP probing is skipped.
+
+### Defacing a Stream
+
+If ONVIF authentication succeeds, `pwneye` can also try to deface the stream directly:
+
+```bash
+pwneye -t 192.168.1.135 --deface "THIS CAMERA IS EXPOSED"
+```
+
+What `--deface` does, in short:
+
+- it first checks whether the target supports stream darkening through ONVIF Imaging
+- it also checks whether the target exposes reusable ONVIF text layers
+- if both are available, `pwneye` performs a full deface
+- if only one side is available, `pwneye` warns the user and offers a partial deface instead
+- before changing anything, `pwneye` saves a restore profile for the target under `~/.pwneye/cache`
+
+The implementation is intentionally conservative and vendor-friendly:
+
+- for the darkening step, `pwneye` lowers supported imaging controls such as brightness, contrast, and saturation instead of relying on vendor-specific tricks
+- for the text step, `pwneye` reuses existing writable ONVIF text layers rather than creating or deleting new OSD entries
+- this makes the feature more compatible across different camera families, even if the final visual result still depends on the firmware
+
+Example:
+
+```text
+pwneye -t 192.168.1.135 --deface "THIS CAMERA IS EXPOSED"
+
+[info] Found cached ONVIF/RTSP credential(s) for 192.168.1.135
+[info] Checking if the target (192.168.1.135) is reachable...
+[info] The target seems to be reachable
+[info] Trying cached ONVIF credentials for the target...
+[success] 192.168.1.135 supports ONVIF on port 80
+[success] ONVIF connection established using the following configuration:
+
+   Port: 80
+   ONVIF Username: admin
+   ONVIF Password: Hackerest1
+
+[info] Inspecting ONVIF deface capabilities...
+[info] The target supports ONVIF deface
+[>] Do you want to proceed with the deface attempt? [(y)es/(n)o] (default: n): y
+[warning] Trying to deface the target stream with THIS CAMERA IS EXPOSED
+[info] A backup profile is being created for future restorations...
+[success] Backup profile saved successfully to /Users/user/.pwneye/cache/192.168.1.135.yaml
+[info] Trying to darken the stream...
+[success] The stream was darkened successfully
+[info] Trying to replace the current on-stream text with THIS CAMERA IS EXPOSED
+[info] Verifying the text update...
+[success] The target stream has been defaced!
+[info] To restore the previous configuration, run the tool again with --undeface
+```
+
+Sample result:
+
+![Deface placeholder](assets/deface.png)
+
+### Undefacing a Stream
+
+If a previous `--deface` run saved a restore profile for the target, `pwneye` can use it to restore the original ONVIF state:
+
+```bash
+pwneye -t 192.168.1.135 --undeface
+```
+
+What `--undeface` does, in short:
+
+- it looks for a previously saved deface restore profile in the target cache entry
+- if no profile exists, it stops immediately with an error
+- if a profile exists, it tries to restore the original Imaging settings and the original writable text layers
+- as with `--deface`, the final result may be full or partial depending on what the target allows through ONVIF
+
+The restore profile is not deleted after a successful `--undeface`. It stays in cache until a future `--deface` overwrites it with a newer profile.
+
+Example:
+
+```text
+pwneye -t 192.168.1.135 --undeface
+
+[info] Found cached ONVIF/RTSP credential(s) for 192.168.1.135
+[info] Checking if the target (192.168.1.135) is reachable...
+[info] The target seems to be reachable
+[info] Trying cached ONVIF credentials for the target...
+[success] 192.168.1.135 supports ONVIF on port 80
+[success] ONVIF connection established using the following configuration:
+
+   Port: 80
+   ONVIF Username: admin
+   ONVIF Password: Hackerest1
+
+[info] Looking for a saved deface profile for this target...
+[info] A saved deface profile was found at /Users/user/.pwneye/cache/192.168.1.135.yaml
+[>] Do you want to proceed with the undeface attempt? [(y)es/(n)o] (default: n): y
+[warning] Trying to restore the target stream...
+[info] Trying to restore the original stream brightness profile...
+[success] The original stream brightness profile was restored successfully
+[info] Trying to restore the original on-stream text...
+[success] The original on-stream text was restored successfully
+[success] The target stream has been restored!
+```
+
+### Getting a shell
+
+If ONVIF authentication succeeds, `pwneye` can also drop you into an interactive ONVIF shell directly.
+This is useful when you want to inspect services, call methods manually, explore capabilities, or test target-specific operations without leaving the current workflow.
+
+Example:
+
+```text
+pwneye -t 192.168.1.135 --shell
+
+[info] Found cached ONVIF/RTSP credential(s) for 192.168.1.135
+[info] Checking if the target (192.168.1.135) is reachable...
+[info] The target seems to be reachable
+[info] Trying cached ONVIF credentials for the target...
+[success] 192.168.1.135 supports ONVIF on port 80
+[success] ONVIF connection established using the following configuration:
+
+   Port: 80
+   ONVIF Username: admin
+   ONVIF Password: Hackerest1
+
+[info] Opening the interactive ONVIF shell...
+
+This feature is powered by https://github.com/nirsimetri/onvif-python (leave it a ⭐!)
+Use TAB for completion and help for commands.
+
+admin@192.168.1.135:80 > ls
+analytics     events        media2        pullpoint     ruleengine    capabilities  help          store         cls           debug         pwd           type
+deviceio      imaging       notification  recording     search        caps          exit          rm            clear         ls            shortcuts
+devicemgmt    media         ptz           replay        subscription  services      quit          show          info          cd            desc
+```
 
 ## RTSP
 
@@ -374,11 +545,12 @@ rtsp://IP:554/?chID=1&streamType=main&linkType=tcp
 rtsp://IP:554/cam/realmonitor?channel=1&subtype=0
 ```
 
-`pwneye` can detect this automatically while probing RTSP, but you can also steer the process explicitly:
+`pwneye` can detect this automatically while probing RTSP, including through vendor-based RTSP knowledge, but you can also steer the process explicitly:
 
 - `--multi-channel` tells `pwneye` to prefer channel-based RTSP paths from the knowledge base
 - `--connection-string` lets you provide your own channel template, including placeholders such as `{channel}`
 - the same template logic also works when the connection strings come from file
+- once multiple channels are found, `pwneye` can open either a single feed or a dedicated multi-channel viewer in one window
 
 Examples:
 
@@ -397,12 +569,23 @@ Sample output:
 [success] RTSP channel 3 is valid
 [warning] RTSP channel enumeration interrupted by user. Using the channels discovered so far
 
-   [1] Channel 1: rtsp://203.0.113.77:554/cam/realmonitor?channel=1&subtype=0
-   [2] Channel 2: rtsp://203.0.113.77:554/cam/realmonitor?channel=2&subtype=0
-   [3] Channel 3: rtsp://203.0.113.77:554/cam/realmonitor?channel=3&subtype=0
+   [0] Open all discovered channels in a dedicated client
+   [1] Channel 1: rtsp://192.168.1.135:554/cam/realmonitor?channel=1&subtype=0
+   [2] Channel 2: rtsp://192.168.1.135:554/cam/realmonitor?channel=2&subtype=0
+   [3] Channel 3: rtsp://192.168.1.135:554/cam/realmonitor?channel=3&subtype=0
 
 [>] Select channel (CTRL-C to exit):
 ```
+
+If you choose `Open all discovered channels`, `pwneye` launches a dedicated multi-channel client that keeps all discovered streams inside a single window. Each feed is shown in the mosaic as a live preview, and clicking a tile promotes that channel to a larger focused view with a simple `Back` action to return to the grid.
+
+By default, live RTSP preview uses the dedicated `pwneye` client. If you prefer the classic system-player workflow instead, you can add `--legacy` to open the validated stream with `ffplay`.
+
+<p align="center">
+  <img src="assets/dvr-demo.png" alt="pwneye dedicated multi-channel client demo">
+</p>
+
+By default, live RTSP preview uses the dedicated `pwneye` client. If you prefer the classic system-player workflow instead, you can add `--legacy` to open the validated stream with `ffplay`.
 
 ### Streaming, Recording, and Snapshots
 
@@ -458,13 +641,6 @@ If `pwneye` were a video game, these are probably the tips you would see on the 
 - **Reboot can be a recovery step:** If you have valid RTSP credentials but still cannot open the video, the stream may simply be unstable after repeated probing. If you also have ONVIF access, a blunt but often effective recovery step is `--reboot`.
 - **A valid stream is not always a meaningful one:** Some devices will happily return a stream even for incorrect paths and incorrect channel IDs. Treat broad channel success as a hint until you confirm that the resulting feed is actually different.
 
-## TODO
-
-- [ ] Add SOCKS proxy support so `pwneye` can operate through a bridge or pivot host that can reach cameras on its own local network
-- [ ] Allow `--target` to accept a file with multiple IPs/hosts so scans can be parallelized across targets
-- [ ] Improve the RTSP database by expanding and refining vendor banner fingerprints
-- [ ] Create a comprehensive WIKI
-
 ## Acknowledgements
 
 Special thanks to [@kaburagisec](https://github.com/kaburagisec) for [`onvif-python`](https://github.com/nirsimetri/onvif-python), the ONVIF library used by `pwneye`.
@@ -474,7 +650,9 @@ It made the ONVIF side of this project dramatically easier and more reliable.
 
 Use `pwneye` only against assets you own or are explicitly authorized to assess.
 
-This tool can enumerate services, test authentication, open streams, record video, and reboot ONVIF-capable devices.
+This tool can enumerate services, test authentication, open streams, record video, interact with ONVIF administrative features, and, with sufficient privileges, reboot, reset, deface, or otherwise alter the behavior of a target device.
+
+Even when your goal is only evidence collection, repeated RTSP probing can make fragile cameras unstable, and ONVIF actions can have immediate operational impact.
 
 ## License
 

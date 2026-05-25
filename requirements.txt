@@ -9,6 +9,7 @@ mdurl==0.1.2
 onvif-python==0.2.9
 ping3==5.1.5
 platformdirs==4.5.1
+PyQt6==6.11.0
 Pygments==2.19.2
 pytz==2025.2
 PyYAML==6.0.3

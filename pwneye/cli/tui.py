@@ -331,7 +331,8 @@ class TUI:
         channels: list[RtspChannelEntry],
         prompt: str = "Select channel",
         indent: int = 3,
-    ) -> RtspChannelEntry:
+        extra_option: str | None = None,
+    ) -> RtspChannelEntry | None:
         """
         Display discovered RTSP channels and let the user choose one.
         """
@@ -340,6 +341,12 @@ class TUI:
 
         prefix = " " * indent
         self.console.print()
+
+        if extra_option is not None:
+            extra_option_display = f"[bold]{escape(extra_option)}[/bold]"
+            self.console.print(
+                f"{prefix}[[cyan]0[/cyan]] {extra_option_display}"
+            )
 
         for idx, entry in enumerate(channels, start=1):
             self.console.print(
@@ -357,6 +364,9 @@ class TUI:
                     raise ValueError
 
                 index = int(choice)
+                if extra_option is not None and index == 0:
+                    return None
+
                 if not 1 <= index <= len(channels):
                     raise ValueError
 
@@ -368,5 +378,5 @@ class TUI:
 
             except ValueError:
                 self.warning(
-                    f"Invalid choice. Select a number between 1 and {len(channels)}"
+                    f"Invalid choice. Select 0 or a number between 1 and {len(channels)}"
                 )

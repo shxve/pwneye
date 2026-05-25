@@ -21,6 +21,13 @@ def _cache_path(host: str) -> Path:
     return CACHE_DIR / f"{safe_host}.yaml"
 
 
+def get_target_cache_path(host: str) -> Path:
+    """
+    Return the cache file path used for the given target host.
+    """
+    return _cache_path(host)
+
+
 def _empty_document(host: str) -> dict:
     """
     Create a new cache document for the given target.
@@ -83,6 +90,34 @@ def save_target(host: str, data: dict) -> None:
             sort_keys=False,
             allow_unicode=False,
         )
+
+
+def count_entries() -> int:
+    """
+    Return the number of cache entry files currently stored on disk.
+    """
+    if not CACHE_DIR.exists():
+        return 0
+
+    return sum(1 for path in CACHE_DIR.glob("*.yaml") if path.is_file())
+
+
+def clear_all() -> int:
+    """
+    Remove all cache entry files and return the number of deleted entries.
+    """
+    if not CACHE_DIR.exists():
+        return 0
+
+    deleted = 0
+    for path in CACHE_DIR.glob("*.yaml"):
+        if not path.is_file():
+            continue
+
+        path.unlink(missing_ok=True)
+        deleted += 1
+
+    return deleted
 
 
 def upsert_onvif_success(

