@@ -6,12 +6,11 @@ import tempfile
 import threading
 import time
 import traceback
-from datetime import datetime
 from pathlib import Path
 
 from pwneye.core import bootstrap
 
-from pwneye.core.types import ExitCode, PromptInterrupt, Result, RtspAttempt, RtspChannelEntry, RtspProbeResult, TUI
+from pwneye.core.types import ExitCode, PromptInterrupt, Result, RtspAttempt, RtspChannelEntry, RtspProbeResult, TUI, ViewerLaunchOptions, ViewerOnvifContext
 
 from pwneye.core.network import common as netcomm
 from pwneye.core.network import onvif, rtsp
@@ -19,9 +18,14 @@ from pwneye.core import viewer
 
 from pwneye.core.storage import cache as cachedata
 from pwneye.core.storage import deface as defacedata
+from pwneye.core.storage.media import (
+    resolve_recording_path,
+    resolve_recording_path_with_notice,
+    resolve_snapshot_path,
+    resolve_snapshot_path_with_notice,
+)
 from pwneye.core.storage import onvif as onvifdata
 from pwneye.core.storage import rtsp as rtspdata
-from pwneye.config import RECORDINGS_DIR, SNAPSHOTS_DIR
 
 ONVIF_SCOPE_PREFIX = "onvif://www.onvif.org/"
 RTSP_CHANNEL_SELECT_PROMPT = "Select channel (CTRL-C to exit)"
@@ -40,6 +44,7 @@ def _allow_open_all_channels(args: argparse.Namespace) -> bool:
     )
 
 def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
+    setattr(args, "_resolved_onvif_port", None)
     init = _initialize_environment(args, tui)
     if not init.ok:
         return init.exit_code
@@ -49,7 +54,7 @@ def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
 
     if args.discover:
         return _run_onvif_discovery(args, tui)
-        
+
     cache_entry = _load_target_cache(args, tui)
     
     if not _check_target_reachability(args, tui):
@@ -69,14 +74,16 @@ def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
         except PromptInterrupt:
             raise
         except KeyboardInterrupt:
-            if not args.skip_rtsp and not args.reboot and not args.reset and args.deface is None and not args.undeface and not args.shell:
+            if not args.skip_rtsp and not args.reboot and not args.reset and args.deface is None and not args.undeface and not args.shell and args.move is None:
                 tui.warning("ONVIF scan interrupted. Continuing with RTSP...")
                 onvif_rtsp_streams, manufacturer, onvif_credentials = [], None, None
             else:
                 raise
 
-        if args.reboot or args.reset or args.deface is not None or args.undeface or args.shell:
+        if args.reboot or args.reset or args.deface is not None or args.undeface or args.shell or args.move is not None:
             return ExitCode.SUCCESS if onvif_post_action_completed else ExitCode.FAILURE
+    else:
+        tui.warning("Skipping ONVIF as per user request")
 
     # RTSP Testing
     if not args.skip_rtsp:
@@ -128,6 +135,8 @@ def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
             tui=tui,
         ):
             return ExitCode.FAILURE
+    else:
+        tui.warning("Skipping RTSP as per user request")
 
     return ExitCode.SUCCESS
 
@@ -278,6 +287,9 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
     if args.shell and args.skip_onvif:
         tui.error("Cannot use --shell together with --skip-onvif")
         return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.move is not None and args.skip_onvif:
+        tui.error("Cannot use --move together with --skip-onvif")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
     if args.reboot and args.reset:
         tui.error("Cannot use --reboot together with --reset")
         return Result(ok=False, exit_code=ExitCode.FAILURE)
@@ -307,6 +319,21 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
         return Result(ok=False, exit_code=ExitCode.FAILURE)
     if args.shell and args.undeface:
         tui.error("Cannot use --shell together with --undeface")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.move is not None and args.reboot:
+        tui.error("Cannot use --move together with --reboot")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.move is not None and args.reset:
+        tui.error("Cannot use --move together with --reset")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.move is not None and args.deface is not None:
+        tui.error("Cannot use --move together with --deface")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.move is not None and args.undeface:
+        tui.error("Cannot use --move together with --undeface")
+        return Result(ok=False, exit_code=ExitCode.FAILURE)
+    if args.move is not None and args.shell:
+        tui.error("Cannot use --move together with --shell")
         return Result(ok=False, exit_code=ExitCode.FAILURE)
     first_run = bootstrap.is_first_run()
     if first_run:
@@ -345,6 +372,7 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
         or args.deface is not None
         or args.undeface
         or args.shell
+        or args.move is not None
     )
     if not args.discover and not args.skip_rtsp and not onvif_only_action:
         dependencies = ["ffprobe"]
@@ -431,18 +459,17 @@ def _run_onvif_discovery(args: argparse.Namespace, tui: TUI) -> ExitCode:
     Continuously discover ONVIF devices on the local network and print only new results.
     """
     tui.info("Starting continuous ONVIF discovery on the local network")
-    tui.info("Press CTRL-C to stop the probing")
 
     discovered_devices: dict[tuple[str, str, tuple[str, ...]], dict] = {}
     pass_count = 0
 
-    tui.start_live("Discovering ONVIF devices on the local network (pass 1)...")
+    tui.start_live("Discovering ONVIF devices on the local network (pass 1) - CTRL-C to stop...")
 
     try:
         while True:
             pass_count += 1
             tui.update_live(
-                "Discovering ONVIF devices on the local network (pass {pass_count})...".format(
+                "Discovering ONVIF devices on the local network (pass {pass_count}). Press CTRL-C to stop the probing...".format(
                     pass_count=pass_count,
                 )
             )
@@ -821,14 +848,32 @@ def _run_onvif_scan(
         )
         return [], None, credentials, shell_completed
 
+    if args.move is not None:
+        _persist_onvif_cache_entry(
+            args=args,
+            port=successful_port,
+            credentials=credentials,
+            manufacturer=None,
+            streams=None,
+            tui=tui,
+            announce=not used_cached_onvif_auth,
+        )
+        move_completed = _move_onvif_camera(
+            camera,
+            args.move,
+            tui,
+        )
+        return [], None, credentials, move_completed
+
     # ---------- EXTRACTION PHASE ----------
     manufacturer = _extract_device_info(camera, tui)
     _extract_onvif_users(camera, tui)
     _extract_network_config(camera, tui)
     _extract_media_profiles(camera, tui)
-    _extract_onvif_capabilities(camera, tui)
+    _extract_snapshot_uris(camera, tui)
 
     streams = _extract_rtsp_streams(camera, tui)
+    _extract_onvif_capabilities(camera, tui)
 
     _persist_onvif_cache_entry(
         args=args,
@@ -839,6 +884,7 @@ def _run_onvif_scan(
         tui=tui,
         announce=not used_cached_onvif_auth,
     )
+    setattr(args, "_resolved_onvif_port", successful_port)
 
     return streams or [], manufacturer, credentials, False
 
@@ -1296,6 +1342,24 @@ def _extract_media_profiles(camera: object, tui: TUI) -> None:
         )
 
 
+def _extract_snapshot_uris(camera: object, tui: TUI) -> None:
+    """
+    Extract and display ONVIF snapshot URIs when available.
+    """
+    tui.info("Trying to extract ONVIF snapshot URIs...")
+
+    snapshot_uris = onvif.get_snapshot_uris(camera)
+    if snapshot_uris:
+        tui.info2("Snapshot URIs:")
+        tui.block([
+            f"{entry['profile']}: {entry['uri']}"
+            for entry in snapshot_uris
+        ])
+        return
+
+    tui.error("Unable to extract ONVIF snapshot URIs")
+
+
 def _extract_onvif_capabilities(camera: object, tui: TUI) -> None:
     """
     Extract and display useful post-auth ONVIF capabilities.
@@ -1305,7 +1369,19 @@ def _extract_onvif_capabilities(camera: object, tui: TUI) -> None:
     capabilities = onvif.get_abuse_capabilities(camera)
     if capabilities:
         tui.info2("ONVIF Capabilities:")
-        tui.block(capabilities)
+        rendered = []
+        for key, value in capabilities.items():
+            if value == "Yes":
+                color = "green"
+            elif value == "No":
+                color = "red"
+            elif value == "Partial":
+                color = "yellow"
+            else:
+                color = "grey70"
+
+            rendered.append(f"[bold]{key}[/]: [{color}]{value}[/]")
+        tui.block(rendered)
     else:
         tui.warning("Unable to determine additional ONVIF capabilities")
 
@@ -1626,6 +1702,48 @@ def _open_onvif_shell(
         return True
 
     tui.error("The interactive ONVIF shell exited unexpectedly")
+    return False
+
+
+def _move_onvif_camera(
+    camera: object,
+    moves: list[tuple[str, float]],
+    tui: TUI,
+) -> bool:
+    """
+    Execute one or more ONVIF PTZ movement requests in sequence.
+    """
+    moved_any = False
+
+    for direction, duration in moves:
+        tui.info(
+            "Requesting ONVIF PTZ move to {direction} for {duration} second(s)...",
+            direction=direction,
+            duration=f"{duration:.2f}",
+        )
+
+        result = onvif.move_in_direction(
+            camera,
+            direction=direction,
+            duration=duration,
+        )
+
+        if not result.get("ok"):
+            detail = result.get("detail")
+            if detail:
+                tui.warning("{detail}", detail=detail)
+            else:
+                tui.warning("Unable to move the camera via ONVIF")
+            continue
+
+        tui.info2("The ONVIF move command was accepted")
+        moved_any = True
+
+    if moved_any:
+        tui.success("The camera has been moved!")
+        return True
+
+    tui.error("No ONVIF PTZ move request was accepted by the target")
     return False
 
 def _extract_rtsp_streams(camera: object, tui: TUI) -> list[str]:
@@ -2997,65 +3115,6 @@ def _warn_before_rtsp_stream(
         "If the live stream does not load immediately, the device may need a moment to recover"
     )
 
-def _resolve_media_output_path(
-    filename: str | None,
-    *,
-    base_dir: Path,
-    target: str,
-    prefix: str,
-    suffix: str,
-) -> Path:
-    """
-    Resolve a media output path using the tool runtime directories.
-    """
-    if not filename:
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        target_dir = base_dir / _sanitize_target_for_path(target)
-        return target_dir / f"{timestamp}{suffix}"
-
-    path = Path(filename).expanduser()
-    if not path.is_absolute():
-        path = base_dir / path
-
-    if path.suffix == "":
-        path = path.with_suffix(suffix)
-
-    return path
-
-def _sanitize_target_for_path(target: str) -> str:
-    """
-    Sanitize a target string so it can be safely used as a directory name.
-    """
-    sanitized = "".join(
-        character if character.isalnum() or character in {"-", "_", "."} else "_"
-        for character in target.strip()
-    )
-    return sanitized.strip("._") or "unknown_target"
-
-def _resolve_recording_path(filename: str | None, target: str) -> Path:
-    """
-    Resolve the recording output path.
-    """
-    return _resolve_media_output_path(
-        filename,
-        base_dir=RECORDINGS_DIR,
-        target=target,
-        prefix="recording",
-        suffix=".mp4",
-    )
-
-def _resolve_snapshot_path(filename: str | None, target: str) -> Path:
-    """
-    Resolve the snapshot output path.
-    """
-    return _resolve_media_output_path(
-        filename,
-        base_dir=SNAPSHOTS_DIR,
-        target=target,
-        prefix="snapshot",
-        suffix=".jpg",
-    )
-
 def _build_ffmpeg_capture_cmd(
     attempt: RtspAttempt,
     temp_path: Path,
@@ -3168,6 +3227,35 @@ def _launch_ffplay_preview(attempt: RtspAttempt) -> tuple[bool, str | None]:
     detail = _read_process_error(stderr_path)
     stderr_path.unlink(missing_ok=True)
     return False, detail or "ffplay exited unexpectedly"
+
+def _resolve_viewer_onvif_context(
+    args: argparse.Namespace,
+    onvif_credentials: tuple[str, str] | None = None,
+) -> ViewerOnvifContext | None:
+    """
+    Return an ONVIF PTZ context for the dedicated viewer when valid auth exists.
+    """
+    resolved_port = getattr(args, "_resolved_onvif_port", None)
+    if resolved_port is not None and onvif_credentials is not None:
+        username, password = onvif_credentials
+        return onvif.build_ptz_viewer_context(
+            host=args.target,
+            port=int(resolved_port),
+            username=str(username),
+            password=str(password),
+        )
+
+    cache_entry = cachedata.load_target(args.target)
+    cached_onvif_auth = cachedata.get_cached_onvif_auth(cache_entry)
+    if cached_onvif_auth is None:
+        return None
+
+    return onvif.build_ptz_viewer_context(
+        host=args.target,
+        port=int(cached_onvif_auth["port"]),
+        username=str(cached_onvif_auth["username"]),
+        password=str(cached_onvif_auth["password"]),
+    )
 
 def _terminate_process(proc: subprocess.Popen | None) -> int | None:
     """
@@ -3369,8 +3457,14 @@ def _capture_rtsp_snapshot(attempt: RtspAttempt, args: argparse.Namespace, tui: 
     """
     Capture a single snapshot from a valid RTSP stream using ffmpeg.
     """
-    output_path = _resolve_snapshot_path(args.snapshot, args.target)
+    output_path, conflicting_path = resolve_snapshot_path_with_notice(args.snapshot, args.target)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if conflicting_path is not None:
+        tui.warning(
+            "The snapshot file already exists at {path}",
+            path=conflicting_path,
+        )
 
     tui.info("Saving RTSP snapshot to {path}", path=output_path)
 
@@ -3405,9 +3499,15 @@ def _record_rtsp_stream(attempt: RtspAttempt, args: argparse.Namespace, tui: TUI
     """
     Record a valid RTSP stream to disk using ffmpeg.
     """
-    output_path = _resolve_recording_path(args.record, args.target)
+    output_path, conflicting_path = resolve_recording_path_with_notice(args.record, args.target)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = _build_temp_recording_path(output_path)
+
+    if conflicting_path is not None:
+        tui.warning(
+            "The recording file already exists at {path}",
+            path=conflicting_path,
+        )
 
     tui.info("Recording RTSP stream to {path}", path=output_path)
     tui.info("Press CTRL-C to stop the recording")
@@ -3456,6 +3556,7 @@ def _play_rtsp_stream(
     args: argparse.Namespace,
     tui: TUI,
     *,
+    onvif_credentials: tuple[str, str] | None = None,
     detach: bool = True,
 ) -> None:
     """
@@ -3476,7 +3577,11 @@ def _play_rtsp_stream(
         return
 
     tui.info("Opening live preview in the dedicated client...")
-    opened, detail = viewer.open_preview([attempt])
+    opened, detail = viewer.open_preview(
+        [attempt],
+        onvif_context=_resolve_viewer_onvif_context(args, onvif_credentials),
+        launch_options=ViewerLaunchOptions(allow_recording=args.record is None),
+    )
 
     if opened:
         return
@@ -3487,8 +3592,10 @@ def _play_rtsp_stream(
         tui.error("Unable to open the live preview")
 
 def _open_multichannel_viewer(
+    args: argparse.Namespace,
     channels: list[RtspChannelEntry],
     tui: TUI,
+    onvif_credentials: tuple[str, str] | None = None,
 ) -> None:
     """
     Open all discovered RTSP channels inside a single mosaic viewer window.
@@ -3496,7 +3603,11 @@ def _open_multichannel_viewer(
     attempts = [entry.attempt for entry in channels]
 
     tui.info("Opening multi-channel live preview...")
-    opened, detail = viewer.open_preview(attempts)
+    opened, detail = viewer.open_preview(
+        attempts,
+        onvif_context=_resolve_viewer_onvif_context(args, onvif_credentials),
+        launch_options=ViewerLaunchOptions(allow_recording=args.record is None),
+    )
 
     if opened:
         return
@@ -3511,6 +3622,7 @@ def _run_multichannel_preview_session(
     channels: list[RtspChannelEntry],
     args: argparse.Namespace,
     tui: TUI,
+    onvif_credentials: tuple[str, str] | None = None,
 ) -> None:
     """
     Keep the tool alive while the user opens multiple discovered RTSP channels.
@@ -3519,6 +3631,7 @@ def _run_multichannel_preview_session(
         selected_attempt,
         args,
         tui,
+        onvif_credentials=onvif_credentials,
         detach=True,
     )
 
@@ -3534,7 +3647,7 @@ def _run_multichannel_preview_session(
             extra_option=extra_option,
         )
         if selected is None:
-            _open_multichannel_viewer(channels, tui)
+            _open_multichannel_viewer(args, channels, tui, onvif_credentials)
             return
 
         current_attempt = selected.attempt
@@ -3542,6 +3655,7 @@ def _run_multichannel_preview_session(
             current_attempt,
             args,
             tui,
+            onvif_credentials=onvif_credentials,
             detach=True,
         )
 
@@ -3550,6 +3664,7 @@ def _run_multichannel_snapshot_preview_session(
     channels: list[RtspChannelEntry],
     args: argparse.Namespace,
     tui: TUI,
+    onvif_credentials: tuple[str, str] | None = None,
 ) -> None:
     """
     Keep the tool alive while the user captures snapshots and opens previews
@@ -3563,6 +3678,7 @@ def _run_multichannel_snapshot_preview_session(
             current_attempt,
             args,
             tui,
+            onvif_credentials=onvif_credentials,
             detach=True,
         )
         current_attempt = tui.select_channel(
@@ -3593,17 +3709,22 @@ def _preview_and_record_rtsp_stream(
     attempt: RtspAttempt,
     args: argparse.Namespace,
     tui: TUI,
+    onvif_credentials: tuple[str, str] | None = None,
 ) -> None:
     """
     Open the live preview while recording the RTSP stream in background.
     """
-    output_path = _resolve_recording_path(args.record, args.target)
+    output_path, conflicting_path = resolve_recording_path_with_notice(args.record, args.target)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = _build_temp_recording_path(output_path)
-    ffplay_cmd = _build_ffplay_cmd(attempt)
+
+    if conflicting_path is not None:
+        tui.warning(
+            "The recording file already exists at {path}",
+            path=conflicting_path,
+        )
 
     tui.info("Recording RTSP stream to {path}", path=output_path)
-    tui.info("Opening live preview with ffplay...")
 
     recorder: subprocess.Popen | None = None
     stderr_path: Path | None = None
@@ -3612,12 +3733,34 @@ def _preview_and_record_rtsp_stream(
         stderr_path = Path(tempfile.mkstemp(prefix="pwneye-ffmpeg-capture-", suffix=".log")[1])
         recorder = _start_ffmpeg_capture(attempt, temp_path, stderr_path)
 
-        subprocess.run(
-            ffplay_cmd,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if args.legacy:
+            tui.info("Opening live preview with ffplay...")
+            subprocess.run(
+                _build_ffplay_cmd(attempt),
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            tui.info("Opening live preview in the dedicated client...")
+            process, viewer_stderr, detail = viewer.open_preview_managed(
+                [attempt],
+                onvif_context=_resolve_viewer_onvif_context(args, onvif_credentials),
+                launch_options=ViewerLaunchOptions(allow_recording=False),
+            )
+            if process is None:
+                if detail:
+                    tui.error("Unable to open the live preview ({detail})", detail=detail)
+                else:
+                    tui.error("Unable to open the live preview")
+                _stop_ffmpeg_recording(recorder)
+                return
+
+            try:
+                process.wait()
+            finally:
+                if viewer_stderr is not None:
+                    viewer_stderr.unlink(missing_ok=True)
 
         if recorder.poll() is None:
             tui.info("Stopping background recording...")
@@ -3683,7 +3826,7 @@ def _handle_rtsp_stream(
 
     if attempt is None:
         if discovered_channels and len(discovered_channels) > 1:
-            _open_multichannel_viewer(discovered_channels, tui)
+            _open_multichannel_viewer(args, discovered_channels, tui, onvif_credentials)
             return
 
         tui.error("Unable to open the multi-channel viewer")
@@ -3698,7 +3841,12 @@ def _handle_rtsp_stream(
         return
 
     if args.record is not None and not args.no_video:
-        _preview_and_record_rtsp_stream(attempt, args, tui)
+        _preview_and_record_rtsp_stream(
+            attempt,
+            args,
+            tui,
+            onvif_credentials=onvif_credentials,
+        )
         return
 
     if args.snapshot is not None and args.no_video:
@@ -3720,10 +3868,11 @@ def _handle_rtsp_stream(
                 discovered_channels,
                 args,
                 tui,
+                onvif_credentials=onvif_credentials,
             )
             return
         _capture_rtsp_snapshot(attempt, args, tui)
-        _play_rtsp_stream(attempt, args, tui)
+        _play_rtsp_stream(attempt, args, tui, onvif_credentials=onvif_credentials)
         return
 
     if discovered_channels and len(discovered_channels) > 1:
@@ -3732,7 +3881,8 @@ def _handle_rtsp_stream(
             discovered_channels,
             args,
             tui,
+            onvif_credentials=onvif_credentials,
         )
         return
 
-    _play_rtsp_stream(attempt, args, tui)
+    _play_rtsp_stream(attempt, args, tui, onvif_credentials=onvif_credentials)

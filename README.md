@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2.0-red" alt="version 1.2.0">
+  <img src="https://img.shields.io/badge/version-1.3.0-red" alt="version 1.3.0">
   <img src="https://img.shields.io/badge/codename-panopticon-black" alt="codename panopticon">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="macOS and Linux">
@@ -18,6 +18,7 @@ Some of the capabilities currently supported include:
 - ONVIF authentication and **multithreaded bruteforce** with single credentials or username/password files
 - ONVIF post-auth enumeration of device information, configured users, network configuration, media profiles, and RTSP stream URIs
 - Camera **reboot**, factory **reset**, and **interactive shell access** via ONVIF
+- ONVIF PTZ movement from both the CLI and the dedicated viewer
 - **Stream deface and restore** support via ONVIF
 - RTSP port detection and **banner-based vendor identification**
 - Vendor-aware RTSP bruteforce with **450+ built-in vendor credential / connection-string profiles**, plus manual vendor and manual connection string support
@@ -44,6 +45,7 @@ https://github.com/user-attachments/assets/6913632b-326d-455e-aa0d-be6bf9b3e66c
   - [Bruteforcing Credentials](#bruteforcing-credentials)
   - [Rebooting a Camera](#rebooting-a-camera)
   - [Resetting a Camera](#resetting-a-camera)
+  - [Moving the Camera](#moving-the-camera)
   - [Defacing a Stream](#defacing-a-stream)
   - [Undefacing a Stream](#undefacing-a-stream)
   - [Getting a shell](#getting-a-shell)
@@ -186,6 +188,7 @@ When a camera exposes ONVIF, `pwneye` can use it to:
 - enumerate useful post-auth context before touching RTSP more aggressively
 - request an authenticated reboot with `--reboot`
 - request an authenticated factory reset with `--reset`
+- move a PTZ-capable camera from the CLI or from the dedicated viewer
 - open an authenticated interactive shell with `--shell`
 - deface the stream via ONVIF with `--deface`
 - restore the last saved deface profile with `--undeface`
@@ -303,6 +306,45 @@ pwneye -t 192.168.1.135 --reset
 **Warning**: this operation may be irreversible and can wipe the current device configuration, credentials, and network settings. Use `--reset` only when you fully understand the impact and are explicitly authorized to perform it.
 
 As with `--reboot`, when `--reset` is used, RTSP probing is skipped.
+
+### Moving the Camera
+
+If the target exposes PTZ controls through ONVIF, `pwneye` can move the camera both from the terminal and from the dedicated live viewer.
+
+From the CLI, use `--move` with `direction,duration`. The flag can be repeated, and the requested moves are executed in sequence while RTSP probing is skipped:
+
+```bash
+pwneye -t 192.168.1.135 --move right,2
+pwneye -t 192.168.1.135 --move right,2 --move up,1 --move down,3
+pwneye -t 192.168.1.135 --move r,2 --move u,1 --move d,3
+```
+
+Accepted directions are:
+
+- `left` or `l`
+- `right` or `r`
+- `up` or `u`
+- `down` or `d`
+
+Example:
+
+```text
+pwneye -t 192.168.1.135 --move r,2 --move u,1
+
+...
+[info] Trying cached ONVIF credentials for the target...
+...
+[success] ONVIF connection established using the following configuration:
+...
+
+[info] Requesting ONVIF PTZ move to right for 2.00 second(s)...
+[info] The ONVIF move command was accepted
+[info] Requesting ONVIF PTZ move to up for 1.00 second(s)...
+[info] The ONVIF move command was accepted
+[success] The camera has been moved!
+```
+
+Inside the dedicated viewer, if PTZ is supported, the focused view also lets you move the camera interactively with `W`, `A`, `S`, and `D`. This is useful when you already have a working stream and want direct visual feedback while adjusting the device.
 
 ### Defacing a Stream
 
@@ -585,6 +627,8 @@ If you choose `Open all discovered channels`, `pwneye` launches a dedicated mult
 
 By default, live RTSP preview uses the dedicated `pwneye` client. If you prefer the classic system-player workflow instead, you can add `--legacy` to open the validated stream with `ffplay`.
 
+When the dedicated client is open, you can also trigger **Snapshot** and **Record** directly from the focused view without leaving the GUI. This is useful when you want to inspect a feed first and only then decide to save a still image or start recording evidence.
+
 ### Streaming, Recording, and Snapshots
 
 Open a validated stream with live preview:
@@ -623,6 +667,7 @@ Recording behavior:
 - `--record [OUTPUT.mp4]`: record the validated RTSP stream; if omitted, a timestamped file is created under `~/.pwneye/recordings`
 - `--snapshot [OUTPUT.jpg]`: save a still frame from the validated RTSP stream; if omitted, a timestamped file is created under `~/.pwneye/snapshots`
 - `--no-video`: skip live preview and decoding
+- the dedicated viewer also exposes `Snapshot` and `Record` actions directly in the focused view
 - default recordings are stored under `~/.pwneye/recordings/<target>/`
 - default snapshots are stored under `~/.pwneye/snapshots/<target>/`
 

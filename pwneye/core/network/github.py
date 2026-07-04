@@ -1,5 +1,7 @@
 import json
+import queue
 import re
+import threading
 
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -37,17 +39,34 @@ def get_latest_release_name(timeout: float = 2.0) -> str | None:
         },
     )
 
+    result_queue: queue.Queue[str | None] = queue.Queue(maxsize=1)
+
+    def runner() -> None:
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                payload = json.load(response)
+        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+            result_queue.put(None)
+            return
+
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            result_queue.put(None)
+            return
+
+        result_queue.put(name.strip())
+
+    worker = threading.Thread(target=runner, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout)
+
+    if worker.is_alive():
+        return None
+
     try:
-        with urlopen(request, timeout=timeout) as response:
-            payload = json.load(response)
-    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return result_queue.get_nowait()
+    except queue.Empty:
         return None
-
-    name = payload.get("name")
-    if not isinstance(name, str) or not name.strip():
-        return None
-
-    return name.strip()
 
 def get_latest_release_version(timeout: float = 2.0) -> str | None:
     """

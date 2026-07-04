@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+## [1.3.0] - 2026-07-04 (Panopticon)
+
+### Added
+
+- In-viewer `Snapshot` and `Record` controls inside the dedicated RTSP client, with native notifications and the same default output behavior used by the CLI
+- ONVIF PTZ movement from the dedicated viewer through `WASD` when the target exposes PTZ support
+- ONVIF PTZ movement from the CLI through repeatable `--move direction,duration` sequences
+- ONVIF Snapshot URI extraction during the post-auth enumeration phase
+- Shortened protocol-skip flags `-so` for `--skip-onvif` and `-sr` for `--skip-rtsp`
+- Custom application icon for the dedicated viewer instead of the default PyQt runtime icon
+- Additional MOTD entries
+
+### Changed
+
+- CLI messaging is more explicit when ONVIF or RTSP are skipped at user request
+- Project documentation was updated for `1.3.0`, including the dedicated client media actions and ONVIF camera movement workflow
+
+### Fixed
+
+- The startup GitHub update check no longer blocks the tool indefinitely when the host has local network access but no real internet connectivity
+- Fixed snapshot path resolution so `--snapshot FILENAME.jpg` is saved under the target-specific snapshot directory instead of the generic snapshots root
+- Fixed snapshot and recording filename collisions so existing output files are no longer overwritten and instead receive a sequential suffix
+- Improved general viewer and workflow polish across the dedicated client, ONVIF PTZ controls, and CLI/media handling
+
 ## [1.2.0] - 2026-05-25 (Panopticon)
 
 ### Added

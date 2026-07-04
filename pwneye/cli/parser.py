@@ -54,6 +54,46 @@ def argparse_type(fn, *, name: str):
             )
     return wrapper
 
+
+def validate_ptz_move(value: str) -> tuple[str, float]:
+    """
+    Validate a PTZ move payload formatted as DIRECTION,DURATION.
+    """
+    parts = [segment.strip() for segment in value.split(",")]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError("expected a move in the form DIRECTION,DURATION")
+
+    direction = parts[0].lower()
+    supported_directions = {
+        "left",
+        "right",
+        "up",
+        "down",
+        "l",
+        "r",
+        "u",
+        "d",
+    }
+    if direction not in supported_directions:
+        raise ValueError("direction must be one of: left, right, up, down, l, r, u, d")
+
+    try:
+        duration = float(parts[1])
+    except ValueError as exc:
+        raise ValueError("duration must be numeric") from exc
+
+    if duration <= 0:
+        raise ValueError("duration must be greater than 0")
+
+    normalized_direction = {
+        "l": "left",
+        "r": "right",
+        "u": "up",
+        "d": "down",
+    }.get(direction, direction)
+
+    return normalized_direction, duration
+
 def parse_args(logger) -> argparse.Namespace:
     parser = PwneyeArgumentParser(
         prog = "pwneye",
@@ -87,6 +127,7 @@ def parse_args(logger) -> argparse.Namespace:
 
     onvif = parser.add_argument_group("ONVIF (Optional)")
     onvif.add_argument(
+        "-so",
         "--skip-onvif",
         action="store_true",
         help="Skip ONVIF detection and probing",
@@ -137,10 +178,18 @@ def parse_args(logger) -> argparse.Namespace:
         action="store_true",
         help="Open an interactive ONVIF shell and skip RTSP probing",
     )
+    onvif.add_argument(
+        "--move",
+        type=argparse_type(validate_ptz_move, name="PTZ move"),
+        action="append",
+        metavar="DIRECTION,DURATION",
+        help="Move the camera via ONVIF using direction,duration (e.g. right,2). Can be specified multiple times and skips RTSP probing",
+    )
     # RTSP options
 
     rtsp = parser.add_argument_group("RTSP (Optional)")
     rtsp.add_argument(
+        "-sr",
         "--skip-rtsp",
         action="store_true",
         help="Skip RTSP detection and probing",

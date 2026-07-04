@@ -33,6 +33,18 @@ class RtspAttempt:
     url: str
 
 @dataclass(frozen=True)
+class ViewerOnvifContext:
+    host: str
+    port: int
+    username: str
+    password: str
+    ptz_supported: bool = False
+
+@dataclass(frozen=True)
+class ViewerLaunchOptions:
+    allow_recording: bool = True
+
+@dataclass(frozen=True)
 class RtspProbeResult:
     url: str
     status_code: Optional[int]

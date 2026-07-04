@@ -12,6 +12,7 @@ from onvif import ONVIFClient, ONVIFDiscovery
 from onvif.cli.interactive import InteractiveShell
 from onvif.cli.utils import colorize
 from pwneye.core.network import common as netcomm
+from pwneye.core.types import ViewerOnvifContext
 
 # TODO: Expand ONVIF capabilities (e.g. device reboot)
 
@@ -61,6 +62,354 @@ def _emphasize_shell_text(text: str) -> str:
     Return a bold ANSI-styled text fragment for the interactive shell intro.
     """
     return f"\033[1m{text}\033[0m"
+
+
+def _get_ptz_profile_token(client: ONVIFClient) -> str | None:
+    """
+    Return the first PTZ-capable media profile token exposed by the target.
+    """
+    try:
+        ptz = client.ptz()
+        media = client.media()
+        profiles = media.GetProfiles()
+    except Exception:
+        return None
+
+    for profile in profiles:
+        profile_token = getattr(profile, "token", None)
+        ptz_configuration = getattr(profile, "PTZConfiguration", None)
+
+        if not profile_token or ptz_configuration is None:
+            continue
+
+        try:
+            ptz.GetStatus(ProfileToken=profile_token)
+            return str(profile_token)
+        except Exception:
+            try:
+                ptz.GetCompatibleConfigurations(ProfileToken=profile_token)
+                return str(profile_token)
+            except Exception:
+                continue
+
+    return None
+
+
+def _get_ptz_service_and_profile_token(client: ONVIFClient) -> tuple[Any, str] | None:
+    """
+    Return a PTZ service and compatible profile token for movement operations.
+    """
+    profile_token = _get_ptz_profile_token(client)
+    if profile_token is None:
+        return None
+
+    try:
+        service = client.ptz()
+    except Exception:
+        return None
+
+    return service, profile_token
+
+
+def _read_ptz_position(service: Any, profile_token: str) -> tuple[float | None, float | None] | None:
+    """
+    Read the current absolute PTZ pan/tilt position from the target.
+    """
+    try:
+        status = service.GetStatus(ProfileToken=profile_token)
+    except Exception:
+        return None
+
+    position = getattr(status, "Position", None)
+    if position is None:
+        return None
+
+    pan_tilt = getattr(position, "PanTilt", None)
+    if pan_tilt is None:
+        return None
+
+    x = getattr(pan_tilt, "x", None)
+    y = getattr(pan_tilt, "y", None)
+
+    try:
+        x_value = None if x is None else float(x)
+        y_value = None if y is None else float(y)
+    except Exception:
+        return None
+
+    return x_value, y_value
+
+
+def get_current_ptz_position(client: ONVIFClient) -> tuple[float | None, float | None] | None:
+    """
+    Return the current PTZ pan/tilt position when available.
+    """
+    ptz_context = _get_ptz_service_and_profile_token(client)
+    if ptz_context is None:
+        return None
+
+    service, profile_token = ptz_context
+    return _read_ptz_position(service, profile_token)
+
+
+def supports_ptz(client: ONVIFClient) -> bool:
+    """
+    Return whether the target exposes a PTZ-capable ONVIF media profile.
+    """
+    return _get_ptz_profile_token(client) is not None
+
+
+def move_in_direction(
+    client: ONVIFClient,
+    *,
+    direction: str,
+    duration: float,
+    poll_interval: float = 0.15,
+) -> dict[str, Any]:
+    """
+    Move the target PTZ position using a smooth ContinuousMove request for a
+    fixed direction and duration.
+    """
+    payload = {
+        "ok": False,
+        "requested": {
+            "direction": direction,
+            "duration": float(duration),
+        },
+        "initial": None,
+        "final": None,
+        "detail": None,
+    }
+
+    ptz_context = _get_ptz_service_and_profile_token(client)
+    if ptz_context is None:
+        payload["detail"] = "PTZ movement is not available on this target"
+        return payload
+
+    service, profile_token = ptz_context
+
+    start_position = _read_ptz_position(service, profile_token)
+    payload["initial"] = start_position
+    if start_position is None:
+        payload["detail"] = "Unable to read the current PTZ position"
+        return payload
+    if start_position[0] is None or start_position[1] is None:
+        payload["detail"] = "The target did not report a usable initial PTZ position"
+        return payload
+
+    vector_map: dict[str, tuple[float, float]] = {
+        "left": (-0.6, 0.0),
+        "right": (0.6, 0.0),
+        "up": (0.0, 0.6),
+        "down": (0.0, -0.6),
+    }
+    direction_key = str(direction).strip().lower()
+    velocity = vector_map.get(direction_key)
+    if velocity is None:
+        payload["detail"] = "The requested PTZ direction is not supported"
+        return payload
+    pan_velocity, tilt_velocity = velocity
+
+    def stop_motion() -> None:
+        try:
+            service.Stop(
+                ProfileToken=profile_token,
+                PanTilt=True,
+                Zoom=False,
+            )
+        except Exception:
+            pass
+
+    try:
+        service.ContinuousMove(
+            ProfileToken=profile_token,
+            Velocity={
+                "PanTilt": {
+                    "x": pan_velocity,
+                    "y": tilt_velocity,
+                }
+            },
+        )
+    except Exception:
+        payload["detail"] = "The ONVIF PTZ move request was rejected or not supported"
+        return payload
+
+    try:
+        time.sleep(float(duration))
+    finally:
+        stop_motion()
+
+    final_deadline = time.monotonic() + max(0.60, min(1.20, float(duration) * 0.35))
+    final_position = start_position
+    while time.monotonic() < final_deadline:
+        time.sleep(max(0.08, poll_interval))
+        updated_position = _read_ptz_position(service, profile_token)
+        if updated_position is None:
+            continue
+        if updated_position[0] is None or updated_position[1] is None:
+            continue
+        final_position = updated_position
+        payload["final"] = updated_position
+
+    if payload["final"] is None:
+        payload["final"] = final_position
+
+    if payload["final"] is None:
+        payload["detail"] = "Unable to read the final PTZ position"
+        return payload
+
+    payload["ok"] = True
+    return payload
+
+
+def build_ptz_viewer_context(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+) -> ViewerOnvifContext | None:
+    """
+    Build a viewer-side ONVIF PTZ context if the target supports movement.
+    """
+    client = try_onvif_connection(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+    )
+    if client is None or not supports_ptz(client):
+        return None
+
+    return ViewerOnvifContext(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        ptz_supported=True,
+    )
+
+
+class PtzController:
+    """
+    Lightweight ONVIF PTZ controller for the dedicated live preview client.
+    """
+
+    def __init__(self, context: ViewerOnvifContext) -> None:
+        self.context = context
+        self._client: ONVIFClient | None = None
+        self._service = None
+        self._profile_token: str | None = None
+        self._active_vector: tuple[float, float] = (0.0, 0.0)
+
+    def _ensure_ready(self) -> bool:
+        if self._service is not None and self._profile_token is not None:
+            return True
+
+        if self._client is None:
+            self._client = try_onvif_connection(
+                host=self.context.host,
+                port=self.context.port,
+                username=self.context.username,
+                password=self.context.password,
+            )
+            if self._client is None:
+                return False
+
+        profile_token = _get_ptz_profile_token(self._client)
+        if profile_token is None:
+            return False
+
+        try:
+            self._service = self._client.ptz()
+        except Exception:
+            self._service = None
+            return False
+
+        self._profile_token = profile_token
+        return True
+
+    def move(self, *, pan: float = 0.0, tilt: float = 0.0) -> bool:
+        """
+        Start or update a continuous PTZ move.
+        """
+        if not self._ensure_ready():
+            return False
+
+        target_vector = (float(pan), float(tilt))
+        if target_vector == self._active_vector:
+            return True
+
+        try:
+            self._service.ContinuousMove(
+                ProfileToken=self._profile_token,
+                Velocity={
+                    "PanTilt": {
+                        "x": target_vector[0],
+                        "y": target_vector[1],
+                    }
+                },
+            )
+            self._active_vector = target_vector
+            return True
+        except Exception:
+            return False
+
+    def stop(self) -> bool:
+        """
+        Stop the current PTZ movement.
+        """
+        if not self._ensure_ready():
+            self._active_vector = (0.0, 0.0)
+            return False
+
+        try:
+            self._service.Stop(
+                ProfileToken=self._profile_token,
+                PanTilt=True,
+                Zoom=False,
+            )
+            self._active_vector = (0.0, 0.0)
+            return True
+        except Exception:
+            return False
+
+    def stop_async(self) -> None:
+        """
+        Fire a best-effort PTZ stop in the background without blocking the caller.
+        """
+        self._active_vector = (0.0, 0.0)
+        threading.Thread(target=self.stop, daemon=True).start()
+
+    def current_position(self) -> tuple[float | None, float | None] | None:
+        """
+        Return the current absolute PTZ pan/tilt position when the device reports it.
+        """
+        if not self._ensure_ready():
+            return None
+
+        try:
+            status = self._service.GetStatus(ProfileToken=self._profile_token)
+        except Exception:
+            return None
+
+        position = getattr(status, "Position", None)
+        if position is None:
+            return None
+
+        pan_tilt = getattr(position, "PanTilt", None)
+        if pan_tilt is None:
+            return None
+
+        x = getattr(pan_tilt, "x", None)
+        y = getattr(pan_tilt, "y", None)
+
+        try:
+            x_value = None if x is None else float(x)
+            y_value = None if y is None else float(y)
+        except Exception:
+            return None
+
+        return x_value, y_value
 
 def probe_onvif_service(
     host: str,
@@ -564,6 +913,43 @@ def get_profiles(client: ONVIFClient) -> List[Dict[str, str]]:
         })
 
     return profiles_out
+
+
+def get_snapshot_uris(client: ONVIFClient) -> List[Dict[str, str]]:
+    """
+    Extract ONVIF SnapshotUri values profile by profile.
+    """
+    snapshot_uris: List[Dict[str, str]] = []
+
+    try:
+        media = client.media()
+        profiles = media.GetProfiles()
+    except Exception:
+        return snapshot_uris
+
+    for profile in profiles:
+        profile_token = getattr(profile, "token", None)
+        if not profile_token:
+            continue
+
+        profile_name = getattr(profile, "Name", "") or str(profile_token)
+
+        try:
+            response = media.GetSnapshotUri(ProfileToken=profile_token)
+        except Exception:
+            continue
+
+        uri = getattr(response, "Uri", "") or ""
+        if not uri:
+            continue
+
+        snapshot_uris.append({
+            "profile": str(profile_name),
+            "token": str(profile_token),
+            "uri": str(uri),
+        })
+
+    return snapshot_uris
 
 
 def _extract_osd_configuration_tokens(profile: Any) -> list[str]:
@@ -1579,6 +1965,7 @@ def get_abuse_capabilities(client: ONVIFClient) -> Dict[str, str]:
     deface_support = get_deface_support(client)
     return {
         "Supports ONVIF Deface": str(deface_support["status"]),
+        "PTZ Camera Movement Available": "Yes" if supports_ptz(client) else "No",
         "Factory Reset Method Available": "Yes" if supports_factory_reset(client) else "No",
     }
 
