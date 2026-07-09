@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+## [1.3.1] - 2026-07-09 (Panopticon)
+
+### Fixed
+
+- Fixed packaging and runtime icon loading for the dedicated viewer so the custom application icon is used correctly in installed builds instead of the default PyQt icon
+
 ## [1.3.0] - 2026-07-04 (Panopticon)
 
 ### Added

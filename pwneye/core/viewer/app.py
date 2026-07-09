@@ -9,10 +9,11 @@ from pathlib import Path
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
+from pwneye.config import BASE_DIR
 from pwneye.core.types import RtspAttempt, ViewerLaunchOptions, ViewerOnvifContext
 from pwneye.core.viewer.client import MultiChannelViewer
 
-APP_ICON_PATH = Path(__file__).resolve().parents[3] / "assets" / "app_icon.png"
+APP_ICON_PATH = BASE_DIR / "data" / "app_icon.png"
 
 
 def _load_payload(
