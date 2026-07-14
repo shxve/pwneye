@@ -635,6 +635,7 @@ def detect(
 def discover(
     timeout: int = 4,
     attempts: int = ONVIF_DISCOVERY_ATTEMPTS,
+    interface: str | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Discover ONVIF devices on the local network via WS-Discovery.
@@ -644,7 +645,7 @@ def discover(
     """
     for attempt in range(max(1, attempts)):
         try:
-            discovery = ONVIFDiscovery(timeout=timeout)
+            discovery = ONVIFDiscovery(timeout=timeout, interface=interface)
             devices = discovery.discover()
         except Exception:
             devices = []

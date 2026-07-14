@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+## [1.3.2] - 2026-07-14 (Panopticon)
+
+### Added
+
+- ONVIF local-network discovery now accepts an optional network interface with `--discover INTERFACE`, making it easier to steer WS-Discovery toward the intended target subnet on multi-homed hosts ([thanks Darix Deros for the suggestion](https://www.linkedin.com/in/knx/))
+
+### Changed
+
+- ONVIF discovery messaging is now more explicit about the target network in use, including the selected interface subnet when it can be resolved
+
+### Fixed
+
+- Replaced shell-based network interface resolution helpers with a library-backed implementation for more reliable cross-platform interface selection on macOS and Linux
+
 ## [1.3.1] - 2026-07-09 (Panopticon)
 
 ### Fixed

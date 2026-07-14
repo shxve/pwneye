@@ -119,8 +119,11 @@ def parse_args(logger) -> argparse.Namespace:
     )
     targeting_mode.add_argument(
         "--discover",
-        action="store_true",
-        help="Discover ONVIF cameras on the local network",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="INTERFACE",
+        help="Discover ONVIF cameras on the local network, optionally using INTERFACE",
     )
 
     # ONVIF options
@@ -319,7 +322,7 @@ def parse_args(logger) -> argparse.Namespace:
 
     args = parser.parse_args()
 
-    if not (args.target or args.discover or args.list_vendors or args.check_updates or args.clear_cache):
+    if not (args.target or args.discover is not None or args.list_vendors or args.check_updates or args.clear_cache):
         parser.error("one of --target or --discover is required")
 
     if args.record is not None and args.snapshot is not None:

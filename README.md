@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.3.1-red" alt="version 1.3.1">
+  <img src="https://img.shields.io/badge/version-1.3.2-red" alt="version 1.3.2">
   <img src="https://img.shields.io/badge/codename-panopticon-black" alt="codename panopticon">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="macOS and Linux">
@@ -200,9 +200,9 @@ Use WS-Discovery to identify ONVIF-capable devices on the local network:
 ```
 pwneye --discover
 
-[info] Starting continuous ONVIF discovery on the local network
-[info] Press CTRL-C to stop the probing
-[success] Discovered 1 new ONVIF device(s) on the local network
+[info] Starting continuous ONVIF discovery on the target network
+[warning] No network interface was specified. Using en0 (subnet 192.168.1.0/24) for discovery
+[success] Discovered 1 new ONVIF device(s) on the target network
 [info] Saved ONVIF discovery data to cache for 192.168.1.135 (Tenda)
 
    Host: 192.168.1.135
@@ -222,6 +222,15 @@ pwneye --discover
 ```
 
 The discovery loop keeps probing every few seconds, prints only newly discovered devices, and can be stopped with `CTRL-C`.
+
+You can also force discovery through a specific network interface:
+
+```bash
+pwneye --discover en0
+pwneye --discover eth0
+```
+
+When no interface is specified, `pwneye` automatically chooses the default outbound interface and tells you which target subnet it is using for WS-Discovery.
 
 ### Bruteforcing Credentials
 
@@ -688,6 +697,8 @@ If `pwneye` were a video game, these are probably the tips you would see on the 
 
 Special thanks to [@kaburagisec](https://github.com/kaburagisec) for [`onvif-python`](https://github.com/nirsimetri/onvif-python), the ONVIF library used by `pwneye`.
 It made the ONVIF side of this project dramatically easier and more reliable.
+
+Thanks to [Darix Deros](https://www.linkedin.com/in/knx/) for helping during testing and for sharing several useful suggestions that improved parts of the tool, including the ONVIF discovery workflow.
 
 ## Safety
 

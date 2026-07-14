@@ -13,6 +13,7 @@ from pwneye.core import bootstrap
 from pwneye.core.types import ExitCode, PromptInterrupt, Result, RtspAttempt, RtspChannelEntry, RtspProbeResult, TUI, ViewerLaunchOptions, ViewerOnvifContext
 
 from pwneye.core.network import common as netcomm
+from pwneye.core.network import interfaces as netifaces
 from pwneye.core.network import onvif, rtsp
 from pwneye.core import viewer
 
@@ -52,7 +53,7 @@ def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
     if args.list_vendors:
         return _list_supported_rtsp_vendors(tui)
 
-    if args.discover:
+    if args.discover is not None:
         return _run_onvif_discovery(args, tui)
 
     cache_entry = _load_target_cache(args, tui)
@@ -374,7 +375,7 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
         or args.shell
         or args.move is not None
     )
-    if not args.discover and not args.skip_rtsp and not onvif_only_action:
+    if args.discover is None and not args.skip_rtsp and not onvif_only_action:
         dependencies = ["ffprobe"]
 
         if (
@@ -401,11 +402,11 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
 
     onvif_kb, rtsp_kb = None, None
 
-    if not args.skip_onvif or args.discover:
+    if not args.skip_onvif or args.discover is not None:
         try:
             onvif_kb = onvifdata.load_knowledge_base()
         except Exception as exc:
-            if args.discover:
+            if args.discover is not None:
                 onvif_kb = None
             else:
                 tui.warning("Unable to load ONVIF knowledge base. ONVIF testing will be skipped.")
@@ -456,25 +457,69 @@ def _list_supported_rtsp_vendors(tui: TUI) -> ExitCode:
 
 def _run_onvif_discovery(args: argparse.Namespace, tui: TUI) -> ExitCode:
     """
-    Continuously discover ONVIF devices on the local network and print only new results.
+    Continuously discover ONVIF devices on the target network and print only new results.
     """
-    tui.info("Starting continuous ONVIF discovery on the local network")
+    tui.info("Starting continuous ONVIF discovery on the target network")
+
+    discovery_interface_ip = None
+    if args.discover == "":
+        selection = netifaces.get_default_interface()
+        selection_subnet = netifaces.format_interface_subnet(selection)
+        if selection.name and selection.ipv4:
+            if selection_subnet:
+                tui.warning(
+                    "No network interface was specified. Using {interface} (subnet {subnet}) for discovery",
+                    interface=selection.name,
+                    subnet=selection_subnet,
+                )
+            else:
+                tui.warning(
+                    "No network interface was specified. Using {interface} for discovery",
+                    interface=selection.name,
+                )
+            discovery_interface_ip = selection.ipv4
+        elif selection.ipv4:
+            tui.warning(
+                "No network interface was specified. Using the default local interface for discovery",
+            )
+            discovery_interface_ip = selection.ipv4
+        else:
+            tui.warning("No network interface was specified. Letting the OS choose one automatically")
+    else:
+        selection = netifaces.resolve_interface_selection(str(args.discover))
+        if selection.ipv4 is None:
+            tui.error("Unable to resolve the IPv4 address for network interface {interface}", interface=args.discover)
+            return ExitCode.FAILURE
+
+        selection_subnet = netifaces.format_interface_subnet(selection)
+        if selection_subnet:
+            tui.info(
+                "Using network interface {interface} (subnet {subnet}) for ONVIF discovery",
+                interface=selection.name or str(args.discover),
+                subnet=selection_subnet,
+            )
+        else:
+            tui.info(
+                "Using network interface {interface} for ONVIF discovery",
+                interface=selection.name or str(args.discover),
+            )
+        discovery_interface_ip = selection.ipv4
 
     discovered_devices: dict[tuple[str, str, tuple[str, ...]], dict] = {}
     pass_count = 0
 
-    tui.start_live("Discovering ONVIF devices on the local network (pass 1) - CTRL-C to stop...")
+    tui.start_live("Discovering ONVIF devices on the target network (pass 1) - CTRL-C to stop...")
 
     try:
         while True:
             pass_count += 1
             tui.update_live(
-                "Discovering ONVIF devices on the local network (pass {pass_count}). Press CTRL-C to stop the probing...".format(
+                "Discovering ONVIF devices on the target network (pass {pass_count}). Press CTRL-C to stop the probing...".format(
                     pass_count=pass_count,
                 )
             )
 
-            devices = onvif.discover()
+            devices = onvif.discover(interface=discovery_interface_ip)
 
             new_devices = []
             for device in devices:
@@ -491,7 +536,7 @@ def _run_onvif_discovery(args: argparse.Namespace, tui: TUI) -> ExitCode:
 
             if new_devices:
                 tui.success(
-                    "Discovered {count} new ONVIF device(s) on the local network",
+                    "Discovered {count} new ONVIF device(s) on the target network",
                     count=len(new_devices),
                 )
 
