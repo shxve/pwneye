@@ -48,6 +48,8 @@ def _allow_open_all_channels(args: argparse.Namespace) -> bool:
 
 def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
     setattr(args, "_resolved_onvif_port", None)
+    setattr(args, "_onvif_kb", None)
+    setattr(args, "_rtsp_kb", None)
     init = _initialize_environment(args, tui)
     if not init.ok:
         return init.exit_code
@@ -66,7 +68,9 @@ def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
     # ONVIF Testing
     onvif_rtsp_streams, manufacturer, onvif_credentials, onvif_post_action_completed = [], None, None, False
     if not args.skip_onvif:
-        onvif_kb = onvifdata.load_knowledge_base()
+        # Reuse the knowledge base validated during initialization; init sets
+        # args.skip_onvif when the load fails, so it is guaranteed valid here.
+        onvif_kb = args._onvif_kb
         try:
             onvif_rtsp_streams, manufacturer, onvif_credentials, onvif_post_action_completed = _run_onvif_scan(
                 args,
@@ -90,7 +94,8 @@ def run(args: argparse.Namespace, tui: TUI) -> ExitCode:
 
     # RTSP Testing
     if not args.skip_rtsp:
-        rtsp_kb = rtspdata.load_knowledge_base()
+        # Reuse the knowledge base validated during initialization.
+        rtsp_kb = args._rtsp_kb
 
         if args.banner:
             rtsp_ports = _resolve_rtsp_ports(
@@ -420,6 +425,9 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
         except Exception as exc:
             tui.warning("Unable to load RTSP knowledge base. RTSP testing will be skipped.")
             args.skip_rtsp = True
+
+    args._onvif_kb = onvif_kb
+    args._rtsp_kb = rtsp_kb
 
     # --- CLI variables checks ---
 
@@ -3262,6 +3270,9 @@ def _launch_ffplay_preview(attempt: RtspAttempt) -> tuple[bool, str | None]:
             stderr=stderr_handle,
             start_new_session=True,
         )
+    except OSError as exc:
+        stderr_path.unlink(missing_ok=True)
+        return False, str(exc)
     finally:
         stderr_handle.close()
 
@@ -3580,6 +3591,9 @@ def _record_rtsp_stream(attempt: RtspAttempt, args: argparse.Namespace, tui: TUI
             else:
                 tui.error("Unable to record the RTSP stream with ffmpeg")
 
+    except OSError as exc:
+        tui.error("Unable to start ffmpeg for the recording ({detail})", detail=str(exc))
+
     except KeyboardInterrupt:
         tui.console.file.write("\r\033[2K")
         tui.console.file.flush()
@@ -3842,6 +3856,9 @@ def _preview_and_record_rtsp_stream(
     except subprocess.CalledProcessError:
         _stop_ffmpeg_recording(recorder)
         tui.error("Unable to open the RTSP stream with ffplay")
+    except OSError as exc:
+        _stop_ffmpeg_recording(recorder)
+        tui.error("Unable to start the required media process ({detail})", detail=str(exc))
     finally:
         _stop_ffmpeg_recording(recorder)
         if stderr_path is not None:

@@ -218,6 +218,14 @@ class RelayStreamSession:
                 stdout=subprocess.DEVNULL,
                 stderr=stderr_handle,
             )
+        except OSError as exc:
+            # ffmpeg missing or not executable: record the reason so the tile can
+            # surface it via last_error() instead of crashing the viewer process.
+            self.process = None
+            try:
+                stderr_handle.write(f"Unable to start ffmpeg: {exc}\n")
+            except OSError:
+                pass
         finally:
             stderr_handle.close()
 
@@ -1733,8 +1741,11 @@ class MultiChannelViewer(QWidget):
             (entry for entry in self.snapshot_processes if entry[0] is process),
             None,
         )
-        if process_info is not None:
-            self.snapshot_processes.remove(process_info)
+        if process_info is None:
+            # finished and errorOccurred can both fire for a single process; the
+            # first invocation already handled it and scheduled its deletion.
+            return
+        self.snapshot_processes.remove(process_info)
 
         try:
             if (
