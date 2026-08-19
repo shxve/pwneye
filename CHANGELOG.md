@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+## [1.4.0] - 2026-08-19 (Panopticon)
+
+### Added
+
 - `--max-channels N` to stop RTSP channel enumeration after `N` channels are found, useful for DVR/NVR targets that report a valid stream across a very wide channel range (defaults to unlimited)
 
 ### Changed
