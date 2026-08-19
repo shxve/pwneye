@@ -292,6 +292,12 @@ class TUI:
                     "[[yellow]warning[/]] Invalid input. Use (y)es, (n)o, or press ENTER for default"
                 )
 
+            except EOFError:
+                # stdin closed / no interactive input available: abort cleanly
+                # instead of letting the EOFError escape as an uncaught traceback.
+                self.interrupted("No interactive input available. Aborting...")
+                raise PromptInterrupt from None
+
             except KeyboardInterrupt:
                 if interrupt_message is None:
                     self.stop_live()
@@ -338,6 +344,10 @@ class TUI:
                     raise ValueError
 
                 return items[index - 1]
+
+            except EOFError:
+                self.interrupted("No interactive input available. Aborting...")
+                raise PromptInterrupt from None
 
             except KeyboardInterrupt:
                 self.interrupted()
@@ -395,6 +405,10 @@ class TUI:
                     raise ValueError
 
                 return channels[index - 1]
+
+            except EOFError:
+                self.interrupted("No interactive input available. Aborting...")
+                raise PromptInterrupt from None
 
             except KeyboardInterrupt:
                 self.interrupted()
