@@ -57,11 +57,21 @@ class TUI:
             # escape markup inside values, then colorize
             safe[k] = f"[grey70]{escape(str(v))}[/]"
 
+        if not safe:
+            # No interpolation requested: return the message verbatim so a stray
+            # brace in device banners, stream URLs, or error text can never break
+            # str.format() and crash the CLI.
+            return message
+
         try:
             return message.format(**safe)
         except KeyError as exc:
             missing = exc.args[0]
             return f"{message} [red](missing key: {missing})[/red]"
+        except (IndexError, ValueError):
+            # Malformed template (e.g. an unbalanced brace): fall back to the raw
+            # message instead of raising.
+            return message
 
     def _print(
         self,

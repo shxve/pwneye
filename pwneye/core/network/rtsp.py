@@ -10,7 +10,7 @@ import socket
 from typing import Optional, Dict
 from dataclasses import dataclass
 
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from pwneye.core.types import RtspProbeResult
 
@@ -21,6 +21,30 @@ class RtspResponse:
     reason: str
     headers: Dict[str, str]
     body: str
+
+# Upper bound on an RTSP response body we are willing to read. Devices may
+# advertise an absurd (or non-numeric) Content-Length; cap it so a hostile or
+# broken target cannot drive unbounded memory growth or crash the parser.
+MAX_RTSP_BODY_BYTES = 1_048_576
+
+
+def _parse_content_length(headers: Dict[str, str]) -> int:
+    """
+    Parse the Content-Length header defensively.
+
+    Returns a sane, bounded byte count instead of letting int() raise on a
+    missing, non-numeric, negative, or oversized value.
+    """
+    raw = (headers.get("content-length") or "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    if value < 0:
+        return 0
+    return min(value, MAX_RTSP_BODY_BYTES)
 
 def build_rtsp_url(
     host: str,
@@ -47,8 +71,8 @@ def build_rtsp_url(
     if (
         username is not None or password is not None
     ) and not (username == "" and password == ""):
-        auth_username = username or ""
-        auth_password = password or ""
+        auth_username = quote(username or "", safe="")
+        auth_password = quote(password or "", safe="")
         auth = f"{auth_username}:{auth_password}@"
     else:
         auth = ""
@@ -99,7 +123,7 @@ def add_rtsp_auth(
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
-    return f"rtsp://{username}:{password}@{host}:{port}{path}"
+    return f"rtsp://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}{path}"
 
 def _read_rtsp_response(sock: socket.socket) -> RtspResponse:
     """
@@ -135,7 +159,7 @@ def _read_rtsp_response(sock: socket.socket) -> RtspResponse:
         key, value = line.split(":", 1)
         headers[key.strip().lower()] = value.strip()
 
-    content_length = int(headers.get("content-length", "0") or "0")
+    content_length = _parse_content_length(headers)
     body = remaining
 
     while len(body) < content_length:
@@ -220,7 +244,7 @@ def _read_rtsp_response_with_deadline(
         key, value = line.split(":", 1)
         headers[key.strip().lower()] = value.strip()
 
-    content_length = int(headers.get("content-length", "0") or "0")
+    content_length = _parse_content_length(headers)
     body = remaining
 
     while len(body) < content_length:
@@ -428,7 +452,7 @@ def probe_rtsp_url(
             headers={"Accept": "application/sdp"},
             stop_event=stop_event,
         )
-    except (socket.timeout, socket.error, OSError) as exc:
+    except (socket.timeout, socket.error, OSError, ValueError) as exc:
         return RtspProbeResult(
             url=rtsp_url,
             status_code=None,
@@ -504,7 +528,7 @@ def probe_rtsp_url(
                 },
                 stop_event=stop_event,
             )
-        except (socket.timeout, socket.error, OSError) as exc:
+        except (socket.timeout, socket.error, OSError, ValueError) as exc:
             return RtspProbeResult(
                 url=rtsp_url,
                 status_code=None,
