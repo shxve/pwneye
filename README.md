@@ -67,7 +67,7 @@ https://github.com/user-attachments/assets/6913632b-326d-455e-aa0d-be6bf9b3e66c
 Install `pwneye` as a system-wide CLI command from GitHub:
 
 ```bash
-pipx install git+https://github.com/Hackerest/pwneye.git
+pipx install git+https://github.com/shxve/pwneye.git
 pwneye --help
 ```
 
@@ -86,7 +86,7 @@ pipx upgrade pwneye
 ### Python
 
 ```bash
-git clone https://github.com/Hackerest/pwneye
+git clone https://github.com/shxve/pwneye
 cd pwneye
 python3 -m venv .venv
 source .venv/bin/activate

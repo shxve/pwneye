@@ -7,8 +7,8 @@ from pathlib import Path
 DEVELOPER = "Michele 'robo7nik' Cisternino"
 VERSION = "1.4.0"
 CODENAME = "panopticon"
-REPO = "https://github.com/hackerest/pwneye"
-GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/Hackerest/pwneye/releases/latest"
+REPO = "https://github.com/shxve/pwneye"
+GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/shxve/pwneye/releases/latest"
 
 # ------------------------------------------
 # Package Paths
