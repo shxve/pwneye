@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--max-channels N` to stop RTSP channel enumeration after `N` channels are found, useful for DVR/NVR targets that report a valid stream across a very wide channel range (defaults to unlimited)
+
+### Changed
+
+- `--timeout` and `--threads` now reject non-positive values with a clear error instead of silently degrading behavior (a zero or negative timeout previously made every probe fail instantly)
+
+### Fixed
+
+- RTSP probing no longer crashes on a malformed or oversized `Content-Length` response from a device; the header is parsed defensively and the response body is bounded
+- RTSP credentials containing `@`, `:`, or `/` are now percent-encoded, so special-character passwords produce valid stream URLs instead of being probed against the wrong host
+- Interactive prompts now abort cleanly when standard input is closed (e.g. piped or otherwise non-interactive runs) instead of raising an uncaught `EOFError`
+- A missing or unrunnable `ffmpeg` / `ffplay` is now reported as an error instead of aborting recording, snapshot, or live preview with a traceback
+- The per-target cache is written atomically, so an interrupt or crash mid-write can no longer corrupt it; cache files are also created owner-only to keep saved credentials private
+- Terminal log output no longer breaks when device banners, stream URLs, or error text contain brace characters
+
 ## [1.3.2] - 2026-07-14 (Panopticon)
 
 ### Added

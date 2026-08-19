@@ -576,6 +576,7 @@ Useful options:
 - `-p, --password PASS`: RTSP password or file with one password per line
 - `-cn, --connection-string PATH`: RTSP connection string or file with one connection string per line
 - `--multi-channel`: prefer RTSP multi-channel connection strings when available
+- `--max-channels N`: stop channel enumeration after finding `N` channels (default: unlimited)
 - `--threads N`: number of concurrent threads used by the bruteforce engine
 
 If `-u` and `-p` are not specified, `pwneye` automatically falls back to its built-in common RTSP usernames and passwords.
@@ -600,6 +601,7 @@ rtsp://IP:554/cam/realmonitor?channel=1&subtype=0
 
 - `--multi-channel` tells `pwneye` to prefer channel-based RTSP paths from the knowledge base
 - `--connection-string` lets you provide your own channel template, including placeholders such as `{channel}`
+- `--max-channels N` caps enumeration once `N` channels have been found, which is handy for DVRs/NVRs that report a valid stream across a very wide channel range (otherwise enumeration keeps probing until the device stops responding or you press `CTRL-C`)
 - the same template logic also works when the connection strings come from file
 - once multiple channels are found, `pwneye` can open either a single feed or a dedicated multi-channel viewer in one window
 
@@ -608,6 +610,7 @@ Examples:
 ```bash
 pwneye -t 192.168.1.135 --skip-onvif --multi-channel
 pwneye -t 192.168.1.135 --skip-onvif -cn '/cam/realmonitor?channel={channel}&subtype=0'
+pwneye -t 192.168.1.135 --skip-onvif -cn '/cam/realmonitor?channel={channel}&subtype=0' --max-channels 4
 pwneye -t 192.168.1.135 --skip-onvif -cn channel_paths.txt
 ```
 
