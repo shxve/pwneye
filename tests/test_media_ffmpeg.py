@@ -2,20 +2,15 @@
 Pure-function tests for the ffmpeg / ffplay command builders.
 
 These assemble the argv lists handed to ffmpeg (capture + finalize) and ffplay
-(live preview). The builders are pure, but they carry two properties worth
-pinning:
+(live preview). The builders are pure. The property worth pinning is argv safety: the RTSP
+URL — which embeds percent-encoded credentials and '@' / ':' / '%' — must be a
+single list element, never a shell string, so it can't be word-split or
+injected. Every spawn site uses an argv list (no shell=True), and these tests
+lock the URL to exactly one element.
 
-  1. Argv safety. The RTSP URL — which embeds percent-encoded credentials and
-     '@' / ':' / '%' — must be a single list element, never a shell string, so
-     it can't be word-split or injected. Every spawn site uses an argv list
-     (no shell=True), and these tests lock the URL to exactly one element.
-
-  2. Anti-drift. The exact same two ffmpeg builders exist twice: the public
-     ``media.build_ffmpeg_*`` (used by the GUI viewer via QProcess) and the
-     private ``engine._build_ffmpeg_*`` (used by the CLI subprocess path). A
-     flag/encoding fix applied to one copy but not the other would silently
-     desync CLI and GUI recordings. ``FfmpegBuilderParityTests`` fails loudly
-     if the two copies ever diverge.
+``media`` is the single source of truth for the ffmpeg builders: both the GUI
+viewer (via QProcess) and the CLI subprocess path import ``build_ffmpeg_*`` from
+it. ``_build_ffplay_cmd`` is engine-local (there is no ffplay builder in media).
 
 Run (from the pwneye repo root):
     venv/bin/python -m unittest discover -s tests -v
@@ -28,11 +23,7 @@ from pwneye.core.storage.media import (
     build_ffmpeg_capture_cmd,
     build_ffmpeg_finalize_cmd,
 )
-from pwneye.core.engine import (
-    _build_ffmpeg_capture_cmd,
-    _build_ffmpeg_finalize_cmd,
-    _build_ffplay_cmd,
-)
+from pwneye.core.engine import _build_ffplay_cmd
 from pwneye.core.types import RtspAttempt
 
 # A URL carrying percent-encoded credentials with the characters that would
@@ -142,30 +133,6 @@ class FfplayCmdTests(unittest.TestCase):
         cmd = _build_ffplay_cmd(_attempt())
         self.assertTrue(_pair_follows(cmd, "-fflags", "nobuffer"))
         self.assertTrue(_pair_follows(cmd, "-flags", "low_delay"))
-
-
-class FfmpegBuilderParityTests(unittest.TestCase):
-    """The CLI (engine) and GUI (media) copies of the ffmpeg builders must be
-    identical. If they diverge, one recording path silently gets a fix the
-    other doesn't. Guard both copies here until the duplication is removed."""
-
-    TEMP = Path("/out/clip.capture.mkv")
-    OUT = Path("/out/clip.mp4")
-
-    def test_capture_cmd_copies_match(self):
-        attempt = _attempt()
-        self.assertEqual(
-            _build_ffmpeg_capture_cmd(attempt, self.TEMP),
-            build_ffmpeg_capture_cmd(attempt, self.TEMP),
-        )
-
-    def test_finalize_cmd_copies_match_for_every_mode(self):
-        for mode in ("copy", "transcode", "video_only_transcode"):
-            with self.subTest(mode=mode):
-                self.assertEqual(
-                    _build_ffmpeg_finalize_cmd(self.TEMP, self.OUT, mode=mode),
-                    build_ffmpeg_finalize_cmd(self.TEMP, self.OUT, mode=mode),
-                )
 
 
 if __name__ == "__main__":

@@ -22,6 +22,9 @@ from pwneye.core import viewer
 from pwneye.core.storage import cache as cachedata
 from pwneye.core.storage import deface as defacedata
 from pwneye.core.storage.media import (
+    build_ffmpeg_capture_cmd,
+    build_ffmpeg_finalize_cmd,
+    build_temp_recording_path,
     resolve_recording_path,
     resolve_recording_path_with_notice,
     resolve_snapshot_path,
@@ -3180,77 +3183,6 @@ def _warn_before_rtsp_stream(
         "If the live stream does not load immediately, the device may need a moment to recover"
     )
 
-def _build_ffmpeg_capture_cmd(
-    attempt: RtspAttempt,
-    temp_path: Path,
-) -> list[str]:
-    """
-    Build the ffmpeg command used to capture an RTSP stream to a tolerant container.
-    """
-    return [
-        "ffmpeg",
-        "-nostats",
-        "-loglevel", "error",
-        "-rtsp_transport", attempt.protocol,
-        "-analyzeduration", "10M",
-        "-probesize", "10M",
-        "-y",
-        "-i", attempt.url,
-        "-map", "0:v:0",
-        "-map", "0:a:0?",
-        "-c", "copy",
-        "-f", "matroska",
-        str(temp_path),
-    ]
-
-def _build_ffmpeg_finalize_cmd(
-    temp_path: Path,
-    output_path: Path,
-    mode: str = "copy",
-) -> list[str]:
-    """
-    Build the ffmpeg command used to finalize the temporary recording into MP4.
-    """
-    cmd = [
-        "ffmpeg",
-        "-nostats",
-        "-loglevel", "error",
-        "-y",
-        "-i", str(temp_path),
-    ]
-
-    if mode == "copy":
-        cmd.extend([
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c", "copy",
-            "-movflags", "+faststart",
-        ])
-    elif mode == "transcode":
-        cmd.extend([
-            "-map", "0:v:0",
-            "-map", "0:a:0?",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-movflags", "+faststart",
-        ])
-    elif mode == "video_only_transcode":
-        cmd.extend([
-            "-map", "0:v:0",
-            "-an",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-        ])
-    else:
-        raise ValueError(f"Unsupported ffmpeg finalize mode: {mode}")
-
-    cmd.append(str(output_path))
-    return cmd
-
 def _build_ffplay_cmd(attempt: RtspAttempt) -> list[str]:
     """
     Build the ffplay command used for live preview.
@@ -3411,12 +3343,6 @@ def _start_ffmpeg_process(
     finally:
         stderr_handle.close()
 
-def _build_temp_recording_path(output_path: Path) -> Path:
-    """
-    Build the temporary recording path used during capture.
-    """
-    return output_path.with_suffix(".capture.mkv")
-
 def _start_ffmpeg_capture(
     attempt: RtspAttempt,
     temp_path: Path,
@@ -3426,7 +3352,7 @@ def _start_ffmpeg_capture(
     Start ffmpeg capture to a temporary file.
     """
     return _start_ffmpeg_process(
-        _build_ffmpeg_capture_cmd(attempt, temp_path),
+        build_ffmpeg_capture_cmd(attempt, temp_path),
         stderr_path,
     )
 
@@ -3489,7 +3415,7 @@ def _finalize_recording_to_mp4(
         try:
             with stderr_path.open("w", encoding="utf-8") as stderr_handle:
                 result = subprocess.run(
-                    _build_ffmpeg_finalize_cmd(temp_path, output_path, mode=mode),
+                    build_ffmpeg_finalize_cmd(temp_path, output_path, mode=mode),
                     stdout=subprocess.DEVNULL,
                     stderr=stderr_handle,
                 )
@@ -3569,7 +3495,7 @@ def _record_rtsp_stream(attempt: RtspAttempt, args: argparse.Namespace, tui: TUI
     """
     output_path, conflicting_path = resolve_recording_path_with_notice(args.record, args.target)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = _build_temp_recording_path(output_path)
+    temp_path = build_temp_recording_path(output_path)
 
     if conflicting_path is not None:
         tui.warning(
@@ -3787,7 +3713,7 @@ def _preview_and_record_rtsp_stream(
     """
     output_path, conflicting_path = resolve_recording_path_with_notice(args.record, args.target)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = _build_temp_recording_path(output_path)
+    temp_path = build_temp_recording_path(output_path)
 
     if conflicting_path is not None:
         tui.warning(
