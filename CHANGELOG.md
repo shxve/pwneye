@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Fixed
+
+- RTSP channel enumeration now always terminates on its own; a target with no further channels no longer leaves the scan probing ever-increasing channel numbers indefinitely (previously only `--max-channels` or CTRL-C could stop it)
+- Invalid or missing command-line arguments are now reported as errors instead of being printed under a `debug` label
+- RTSP credentials are no longer embedded in the request-URI sent to the device; they travel only in the `Authorization` header, matching standard RTSP clients and keeping the password out of the request line
 
 ## [1.4.0] - 2026-08-19 (Panopticon)
 
