@@ -27,7 +27,7 @@ class PwneyeArgumentParser(argparse.ArgumentParser):
         """
         self.print_usage()
         print()
-        self.logger.debug(message)
+        self.logger.error(message)
         self.exit(2)
 
     def exit(self, status=0, message=None):
