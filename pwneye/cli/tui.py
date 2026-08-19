@@ -162,12 +162,19 @@ class TUI:
         self,
         content: Iterable[str] | Mapping[str, Any],
         indent: int = 3,
+        escape_markup: bool = True,
     ) -> None:
         """
         Print an indented block of text, surrounded by blank lines.
 
         - If content is a list/iterable of strings, each line is printed as-is.
         - If content is a dict, it is printed as `key: value`.
+
+        By default every value is escaped so that untrusted content (device
+        banners, ONVIF metadata, stream URLs, and other target-controlled
+        strings) cannot inject Rich markup or crash rendering with a malformed
+        tag. Callers that intentionally pass pre-formatted markup must opt out
+        with ``escape_markup=False``.
         """
         prefix = " " * indent
 
@@ -176,9 +183,14 @@ class TUI:
         if isinstance(content, dict):
             for key, value in content.items():
                 value = "(empty)" if not value else value
+                if escape_markup:
+                    key = escape(str(key))
+                    value = escape(str(value))
                 self.console.print(f"{prefix}[bold]{key}[/]: [grey70]{value}[/]")
         else:
             for line in content:
+                if escape_markup:
+                    line = escape(str(line))
                 self.console.print(f"{prefix}{line}")
 
         self.console.print()
@@ -298,9 +310,9 @@ class TUI:
         # Build numbered block with colored numbers only
         lines = []
         for idx, item in enumerate(items, start=1):
-            lines.append(f"[[cyan]{idx}[/cyan]] {item}")
+            lines.append(f"[[cyan]{idx}[/cyan]] {escape(str(item))}")
 
-        self.block(lines, indent=indent)
+        self.block(lines, indent=indent, escape_markup=False)
 
         while True:
             try:
@@ -350,7 +362,9 @@ class TUI:
 
         for idx, entry in enumerate(channels, start=1):
             self.console.print(
-                f"{prefix}[[cyan]{idx}[/cyan]] Channel [grey70]{entry.channel}[/grey70]: [grey70]{entry.attempt.url}[/]"
+                f"{prefix}[[cyan]{idx}[/cyan]] Channel "
+                f"[grey70]{escape(str(entry.channel))}[/grey70]: "
+                f"[grey70]{escape(str(entry.attempt.url))}[/]"
             )
 
         self.console.print()

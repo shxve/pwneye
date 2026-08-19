@@ -8,6 +8,8 @@ import time
 import traceback
 from pathlib import Path
 
+from rich.markup import escape
+
 from pwneye.core import bootstrap
 
 from pwneye.core.types import ExitCode, PromptInterrupt, Result, RtspAttempt, RtspChannelEntry, RtspProbeResult, TUI, ViewerLaunchOptions, ViewerOnvifContext
@@ -1425,8 +1427,8 @@ def _extract_onvif_capabilities(camera: object, tui: TUI) -> None:
             else:
                 color = "grey70"
 
-            rendered.append(f"[bold]{key}[/]: [{color}]{value}[/]")
-        tui.block(rendered)
+            rendered.append(f"[bold]{escape(str(key))}[/]: [{color}]{escape(str(value))}[/]")
+        tui.block(rendered, escape_markup=False)
     else:
         tui.warning("Unable to determine additional ONVIF capabilities")
 
