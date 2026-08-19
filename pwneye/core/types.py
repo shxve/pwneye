@@ -78,9 +78,11 @@ class TUI(Protocol):
     # Prompts
     def select(
         self,
-        prompt: str,
-        options: Sequence[T],
-    ) -> T: ...
+        title: str,
+        items: list[str],
+        prompt: str = "Choice",
+        indent: int = 3,
+    ) -> str: ...
 
     def select_channel(
         self,

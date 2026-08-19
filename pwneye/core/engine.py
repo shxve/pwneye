@@ -412,7 +412,7 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
     if not args.skip_onvif or args.discover is not None:
         try:
             onvif_kb = onvifdata.load_knowledge_base()
-        except Exception as exc:
+        except Exception:
             if args.discover is not None:
                 onvif_kb = None
             else:
@@ -422,7 +422,7 @@ def _initialize_environment(args: argparse.Namespace, tui: TUI) -> Result:
     if not args.skip_rtsp:
         try:
             rtsp_kb = rtspdata.load_knowledge_base()
-        except Exception as exc:
+        except Exception:
             tui.warning("Unable to load RTSP knowledge base. RTSP testing will be skipped.")
             args.skip_rtsp = True
 
@@ -1211,7 +1211,7 @@ def _persist_onvif_cache_entry(
     if announce:
         tui.info2("Saved ONVIF credentials to cache")
 
-def _extract_device_info(camera: object, tui: TUI) -> str:
+def _extract_device_info(camera: object, tui: TUI) -> str | None:
     """
     Extract and display device information.
     Return the manufacturer for a tailored RTSP bruteforce later.
@@ -2194,7 +2194,7 @@ def _expand_rtsp_path(path: str) -> list[str]:
         return [path]
 
     channels = [1, 2, 101, 102]
-    return [path.format(channel=channel) for channel in channels]
+    return [path.replace("{channel}", str(channel)) for channel in channels]
 
 def _is_multichannel_rtsp_path(path: str) -> bool:
     """
@@ -2287,7 +2287,7 @@ def _build_rtsp_channel_attempt(
     """
     Build a concrete RTSP attempt for a specific channel id.
     """
-    path = channel_template.format(channel=channel)
+    path = channel_template.replace("{channel}", str(channel))
     url = rtsp.build_rtsp_url(
         host=base_attempt.host,
         port=base_attempt.port,
@@ -3001,7 +3001,7 @@ def _run_rtsp_scan(
     )
 
     if match is None or result is None:
-        if not provided_connection_strings and not exhaustive_paths and _should_offer_exhaustive_rtsp_scan(args, vendor):
+        if not provided_connection_strings and not exhaustive_paths:
             fallback_ports, fallback_usernames, fallback_passwords, fallback_paths, _ = _resolve_rtsp_targets(
                 args=args,
                 rtsp_kb=rtsp_kb,
@@ -3123,15 +3123,6 @@ def _build_rtsp_failure_hint(args: argparse.Namespace) -> str:
         "Try specifying --vendor or --connection-string, or rerun the tool with different "
         "credentials if you already know them."
     )
-
-def _should_offer_exhaustive_rtsp_scan(
-    args: argparse.Namespace,
-    vendor: str | None,
-) -> bool:
-    """
-    Return True if an exhaustive RTSP fallback should be proposed.
-    """
-    return True
 
 def _confirm_exhaustive_rtsp_scan(
     tui: TUI,

@@ -1,7 +1,12 @@
 import argparse
 from rich_argparse import RichHelpFormatter
 
-from pwneye.core.utils.validators import validate_ip_or_domain, validate_port
+from pwneye.core.utils.validators import (
+    validate_ip_or_domain,
+    validate_port,
+    validate_threads,
+    validate_timeout,
+)
 
 # Custom configuration for the parser
 RichHelpFormatter.styles.clear()
@@ -233,7 +238,7 @@ def parse_args(logger) -> argparse.Namespace:
     )
     rtsp.add_argument(
         "--timeout",
-        type=int,
+        type=argparse_type(validate_timeout, name="timeout"),
         default=10,
         metavar="SECONDS",
         help="RTSP connection timeout (default: 10)",
@@ -304,7 +309,7 @@ def parse_args(logger) -> argparse.Namespace:
     misc = parser.add_argument_group("Misc (optional)")
     misc.add_argument(
         "--threads",
-        type=int,
+        type=argparse_type(validate_threads, name="threads"),
         default=1,
         metavar="N",
         help="Number of concurrent threads",

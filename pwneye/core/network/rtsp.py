@@ -125,56 +125,6 @@ def add_rtsp_auth(
 
     return f"rtsp://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}{path}"
 
-def _read_rtsp_response(sock: socket.socket) -> RtspResponse:
-    """
-    Read a complete RTSP response from an already connected socket.
-    """
-    data = b""
-
-    while b"\r\n\r\n" not in data:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        data += chunk
-
-    if not data:
-        raise OSError("Empty RTSP response")
-
-    header_bytes, _, remaining = data.partition(b"\r\n\r\n")
-    header_text = header_bytes.decode("utf-8", errors="ignore")
-    header_lines = header_text.split("\r\n")
-
-    if not header_lines:
-        raise OSError("Invalid RTSP response")
-
-    match = re.match(r"RTSP/\d+\.\d+\s+(\d+)\s*(.*)", header_lines[0])
-    if not match:
-        raise OSError("Malformed RTSP status line")
-
-    headers: Dict[str, str] = {}
-    for line in header_lines[1:]:
-        if ":" not in line:
-            continue
-
-        key, value = line.split(":", 1)
-        headers[key.strip().lower()] = value.strip()
-
-    content_length = _parse_content_length(headers)
-    body = remaining
-
-    while len(body) < content_length:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        body += chunk
-
-    return RtspResponse(
-        status_code=int(match.group(1)),
-        reason=match.group(2).strip(),
-        headers=headers,
-        body=body[:content_length].decode("utf-8", errors="ignore"),
-    )
-
 def _ensure_not_cancelled(stop_event: threading.Event | None) -> None:
     """
     Abort the current RTSP operation if a stop has been requested.
@@ -680,29 +630,21 @@ def is_rtsp_port(host: str, port: int, timeout: int = 3) -> bool:
     Returns:
         True if port responds to RTSP, False otherwise
     """
+    request = (
+        f"OPTIONS rtsp://{host}:{port}/ RTSP/1.0\r\n"
+        f"CSeq: 1\r\n"
+        f"\r\n"
+    )
+
     try:
-        # Create socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        
-        # Connect
-        sock.connect((host, port))
-        
-        # Send RTSP OPTIONS request
-        request = (
-            f"OPTIONS rtsp://{host}:{port}/ RTSP/1.0\r\n"
-            f"CSeq: 1\r\n"
-            f"\r\n"
-        )
-        sock.sendall(request.encode())
-        
-        # Read response
-        response = sock.recv(1024).decode('utf-8', errors='ignore')
-        
-        sock.close()
-        
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect((host, port))
+            sock.sendall(request.encode())
+            response = sock.recv(1024).decode("utf-8", errors="ignore")
+
         # Check if response is RTSP
-        return response.startswith('RTSP/1.0') or response.startswith('RTSP/2.0')
+        return response.startswith("RTSP/1.0") or response.startswith("RTSP/2.0")
     except (socket.timeout, socket.error, ConnectionRefusedError, OSError):
         return False
     

@@ -37,3 +37,32 @@ def validate_port(value: str) -> int:
         return port
 
     raise ValueError("must be an integer between 1 and 65535")
+
+def validate_timeout(value: str) -> int:
+    """
+    Validate that the provided value is a positive connection timeout in seconds.
+    """
+    try:
+        timeout = int(value)
+    except ValueError:
+        raise ValueError("must be a positive integer number of seconds")
+
+    if timeout <= 0:
+        raise ValueError("must be greater than 0")
+
+    return timeout
+
+
+def validate_threads(value: str) -> int:
+    """
+    Validate that the provided value is a positive thread count.
+    """
+    try:
+        threads = int(value)
+    except ValueError:
+        raise ValueError("must be a positive integer")
+
+    if threads < 1:
+        raise ValueError("must be at least 1")
+
+    return threads
