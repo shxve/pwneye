@@ -2551,10 +2551,21 @@ def _discover_rtsp_channels(
                 if candidate is None:
                     continue
 
-                if try_channel(candidate):
-                    follow_up_from(candidate)
+                # Skip channels already probed (e.g. covered by an earlier
+                # follow-up run) so they are not mistaken for a missing channel.
+                while candidate in tested:
+                    candidate += 1
 
-                next_candidates[family] = candidate + 1
+                if try_channel(candidate):
+                    # Fresh hit: let follow_up_from extend the contiguous run,
+                    # then resume past it on the next iteration.
+                    follow_up_from(candidate)
+                    next_candidates[family] = candidate + 1
+                else:
+                    # A fresh channel that does not exist ends this family. Without
+                    # this the loop would probe ever-increasing channel numbers
+                    # forever (only CTRL-C or --max-channels could ever stop it).
+                    next_candidates[family] = None
     except _ChannelLimitReached:
         tui.info(
             "Reached the requested maximum of {limit} channel(s); stopping enumeration",
