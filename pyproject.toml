@@ -58,9 +58,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Hackerest/pwneye"
-Repository = "https://github.com/Hackerest/pwneye"
-Issues = "https://github.com/Hackerest/pwneye/issues"
+Homepage = "https://github.com/shxve/pwneye"
+Repository = "https://github.com/shxve/pwneye"
+Issues = "https://github.com/shxve/pwneye/issues"
 
 [project.scripts]
 pwneye = "pwneye.__main__:main"
