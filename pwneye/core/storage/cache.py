@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 import re
+import tempfile
 import yaml
 
 from pwneye.config import CACHE_DIR
@@ -83,13 +85,31 @@ def save_target(host: str, data: dict) -> None:
     data.setdefault("onvif", {})
     data.setdefault("rtsp", {})
 
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(
-            data,
-            handle,
-            sort_keys=False,
-            allow_unicode=False,
-        )
+    # Write to a temporary file in the same directory and atomically replace the
+    # target file. An interrupt or crash mid-write can then never corrupt the
+    # cache: a reader always sees either the previous or the new complete
+    # document, never a half-written one. The temp file inherits mkstemp's 0600
+    # permissions, which also keeps cached credentials owner-only.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(
+                data,
+                handle,
+                sort_keys=False,
+                allow_unicode=False,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def count_entries() -> int:
