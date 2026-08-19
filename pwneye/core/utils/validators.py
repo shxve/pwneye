@@ -1,3 +1,4 @@
+import ipaddress
 import re
 
 def validate_ip_or_domain(value: str) -> str:
@@ -5,18 +6,31 @@ def validate_ip_or_domain(value: str) -> str:
     Validate that the provided value is a valid IP address, fully qualified domain name (FQDN),
     or short hostname. Trailing dots are not allowed.
 
+    A value shaped like a dotted-decimal IPv4 address (``a.b.c.d``) is validated
+    strictly with :mod:`ipaddress`, so out-of-range octets such as
+    ``999.999.999.999`` are rejected instead of slipping through as
+    hostname-shaped input. Genuine hostnames remain leniently accepted; real
+    resolution still happens at connect time.
+
     :param value: The input string to validate.
     :return: The validated IP or domain.
     """
-    ip_regex = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
     hostname_regex = re.compile(
         r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})*$"
     )
+    dotted_quad_regex = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
     if value.endswith("."):
         raise ValueError("Trailing dots are not allowed.")
 
-    if ip_regex.match(value) or hostname_regex.match(value):
+    if dotted_quad_regex.match(value):
+        try:
+            ipaddress.IPv4Address(value)
+        except ValueError:
+            raise ValueError("Must be a valid IP address or hostname.")
+        return value
+
+    if hostname_regex.match(value):
         return value
 
     raise ValueError("Must be a valid IP address or hostname.")

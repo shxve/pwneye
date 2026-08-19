@@ -5,8 +5,10 @@ Pure-function tests for the CLI argument validators in
 These run at argparse time and are the first gate on user input: a port, a
 timeout, a thread count, or a target host. The numeric validators reject
 non-positive / out-of-range values (a zero timeout previously made every probe
-fail instantly, per CHANGELOG 1.4.0), and the host validator is deliberately
-lenient at the CLI layer — real resolution happens at connect time.
+fail instantly, per CHANGELOG 1.4.0). The host validator stays lenient about
+hostnames — real resolution happens at connect time — but a value shaped like a
+dotted-decimal IPv4 address is validated strictly, so malformed octets are
+rejected up front.
 
 Run (from the pwneye repo root):
     venv/bin/python -m unittest discover -s tests -v
@@ -43,10 +45,21 @@ class ValidateIpOrDomainTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             v.validate_ip_or_domain("under_score.com")
 
-    def test_numeric_out_of_range_is_accepted_at_cli_layer(self):
-        # Documented leniency: "999.1.1.1" is hostname-shaped, so the CLI
-        # validator lets it through; connect-time resolution is the real gate.
-        self.assertEqual(v.validate_ip_or_domain("999.1.1.1"), "999.1.1.1")
+    def test_dotted_quad_octet_out_of_range_is_rejected(self):
+        # A value shaped like a dotted-decimal IPv4 address is validated
+        # strictly: octets above 255 are malformed, not hostname-shaped input.
+        for bad in ("999.1.1.1", "256.0.0.1", "1.2.3.999"):
+            with self.assertRaises(ValueError):
+                v.validate_ip_or_domain(bad)
+
+    def test_valid_ipv4_bounds_are_accepted(self):
+        self.assertEqual(v.validate_ip_or_domain("255.255.255.255"), "255.255.255.255")
+        self.assertEqual(v.validate_ip_or_domain("0.0.0.0"), "0.0.0.0")
+
+    def test_non_quad_numeric_host_stays_lenient(self):
+        # Only the exact 4-octet dotted shape is validated as IPv4; other
+        # numeric-looking hosts remain hostname-lenient (resolved at connect).
+        self.assertEqual(v.validate_ip_or_domain("1.2.3"), "1.2.3")
 
 
 class ValidatePortTests(unittest.TestCase):
