@@ -392,12 +392,19 @@ def probe_rtsp_url(
             error="Missing RTSP host",
         )
 
+    # Request-URI put on the wire and used for the Digest hash. Credentials are
+    # carried in the Authorization header, never in the request-URI: embedding
+    # "user:pass@" there is non-standard (real clients such as ffmpeg and VLC
+    # strip it), leaks the password into the request line, and makes some
+    # cameras reject the request or miscompute the Digest response.
+    request_uri = f"rtsp://{host}:{port}{parsed['path'] or '/'}"
+
     try:
         response = _send_rtsp_request(
             host=host,
             port=port,
             method=method,
-            url=rtsp_url,
+            url=request_uri,
             timeout=timeout,
             headers={"Accept": "application/sdp"},
             stop_event=stop_event,
@@ -447,7 +454,7 @@ def probe_rtsp_url(
                 username=username,
                 password=password,
                 method=method,
-                uri=rtsp_url,
+                uri=request_uri,
                 params=params,
             )
         else:
@@ -470,7 +477,7 @@ def probe_rtsp_url(
                 host=host,
                 port=port,
                 method=method,
-                url=rtsp_url,
+                url=request_uri,
                 timeout=timeout,
                 headers={
                     "Accept": "application/sdp",
