@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RTSP credentials are no longer embedded in the request-URI sent to the device; they travel only in the `Authorization` header, matching standard RTSP clients and keeping the password out of the request line
 - Project metadata URLs (Homepage, Repository, Issues) now point to the maintained `github.com/shxve/pwneye` repository instead of the stale upstream, so the links shown by `pipx`/PyPI-style tooling resolve to the right place
 - The target validator now rejects malformed dotted-decimal addresses such as `999.999.999.999` up front (validated strictly via `ipaddress`) instead of accepting them as hostname-shaped input; genuine hostnames are still accepted and resolved at connect time
+- RTSP Digest authentication now selects `qop=auth` wherever it appears in the server's offered list (e.g. `auth-int,auth`), rather than only when it is the first token; the builder is now the canonical implementation shared verbatim with CamXploit ahead of the Horizon merge
 
 ## [1.4.0] - 2026-08-19 (Panopticon)
 

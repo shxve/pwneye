@@ -156,6 +156,17 @@ class DigestAuthTests(unittest.TestCase):
         self.assertIsNotNone(header)
         self.assertIn('qop="auth"', header)
 
+    def test_qop_auth_offered_after_auth_int_is_selected(self):
+        # "auth" is picked wherever it appears in the offered list, not only
+        # when it is the first token.
+        params = dict(self.PARAMS)
+        params["qop"] = "auth-int,auth"
+        header = _build_digest_authorization(
+            self.USER, self.PW, self.METHOD, self.URI, params
+        )
+        self.assertIsNotNone(header)
+        self.assertIn('qop="auth"', header)
+
 
 if __name__ == "__main__":
     unittest.main()

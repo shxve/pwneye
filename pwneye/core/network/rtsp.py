@@ -311,7 +311,13 @@ def _build_digest_authorization(
     params: Dict[str, str],
 ) -> str | None:
     """
-    Build a Digest authorization header value.
+    Build an RFC 2617 Digest authorization header value (MD5, qop=auth).
+
+    Canonical digest builder: kept behaviourally identical to CamXploit's
+    ``_build_digest_authorization`` so the Horizon merge can collapse the two
+    copies into a single shared helper. Returns None when the challenge is
+    unusable (missing realm/nonce, a non-MD5 algorithm, or a qop that does not
+    offer "auth").
     """
     realm = params.get("realm")
     nonce = params.get("nonce")
@@ -338,9 +344,12 @@ def _build_digest_authorization(
     ]
 
     if qop:
-        qop_token = qop.split(",")[0].strip()
-        if qop_token != "auth":
+        # A server may offer several qop tokens (e.g. "auth,auth-int"); use
+        # "auth" whenever it is on offer. auth-int is not implemented.
+        offered = [token.strip().lower() for token in qop.split(",")]
+        if "auth" not in offered:
             return None
+        qop_token = "auth"
 
         cnonce = hashlib.md5(os.urandom(16)).hexdigest()[:16]
         nc = "00000001"
