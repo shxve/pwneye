@@ -3,6 +3,7 @@ from rich_argparse import RichHelpFormatter
 
 from pwneye.core.utils.validators import (
     validate_ip_or_domain,
+    validate_max_channels,
     validate_port,
     validate_threads,
     validate_timeout,
@@ -257,6 +258,13 @@ def parse_args(logger) -> argparse.Namespace:
         "--multi-channel",
         action="store_true",
         help="Prefer RTSP multi-channel connection strings when available",
+    )
+    rtsp.add_argument(
+        "--max-channels",
+        type=argparse_type(validate_max_channels, name="max channels"),
+        default=None,
+        metavar="N",
+        help="Stop RTSP channel enumeration after finding N channels (default: unlimited)",
     )
     rtsp.add_argument(
         "--legacy",

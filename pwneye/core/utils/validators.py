@@ -66,3 +66,18 @@ def validate_threads(value: str) -> int:
         raise ValueError("must be at least 1")
 
     return threads
+
+
+def validate_max_channels(value: str) -> int:
+    """
+    Validate that the provided value is a positive channel-enumeration cap.
+    """
+    try:
+        maximum = int(value)
+    except ValueError:
+        raise ValueError("must be a positive integer")
+
+    if maximum < 1:
+        raise ValueError("must be at least 1")
+
+    return maximum

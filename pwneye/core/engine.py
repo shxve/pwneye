@@ -2439,6 +2439,10 @@ def _build_cached_rtsp_channel_entries(
 
     return entries
 
+class _ChannelLimitReached(Exception):
+    """Signal that the requested --max-channels cap has been reached."""
+
+
 def _discover_rtsp_channels(
     base_attempt: RtspAttempt,
     args: argparse.Namespace,
@@ -2451,11 +2455,16 @@ def _discover_rtsp_channels(
     if extracted is None:
         return [RtspChannelEntry(channel=1, attempt=base_attempt)], False
 
+    max_channels = getattr(args, "max_channels", None)
+
     channel_template, initial_channel = extracted
     discovered: dict[int, RtspChannelEntry] = {
         initial_channel: RtspChannelEntry(channel=initial_channel, attempt=base_attempt)
     }
     tested = {initial_channel}
+
+    def channel_limit_reached() -> bool:
+        return max_channels is not None and len(discovered) >= max_channels
 
     def try_channel(channel: int) -> bool:
         if channel in tested or channel <= 0:
@@ -2472,6 +2481,8 @@ def _discover_rtsp_channels(
         if result.stream_available:
             discovered[channel] = RtspChannelEntry(channel=channel, attempt=attempt)
             tui.success("RTSP channel {channel} is valid", channel=channel)
+            if channel_limit_reached():
+                raise _ChannelLimitReached
             return True
 
         return False
@@ -2508,6 +2519,9 @@ def _discover_rtsp_channels(
     interrupted = False
 
     try:
+        if channel_limit_reached():
+            raise _ChannelLimitReached
+
         for wave in initial_waves:
             for channel in wave:
                 if try_channel(channel):
@@ -2538,6 +2552,11 @@ def _discover_rtsp_channels(
                     follow_up_from(candidate)
 
                 next_candidates[family] = candidate + 1
+    except _ChannelLimitReached:
+        tui.info(
+            "Reached the requested maximum of {limit} channel(s); stopping enumeration",
+            limit=max_channels,
+        )
     except KeyboardInterrupt:
         interrupted = True
         tui.console.file.write("\r\033[2K")
